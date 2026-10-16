@@ -1,0 +1,8 @@
+{
+  "name": "Remix Remix Advocate360 AI",
+  "description": "Your AI Junior Advocate, available 24x7. Intelligent case analysis, legal research, drafting, evidence scoring, contradiction detection, and practice management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
