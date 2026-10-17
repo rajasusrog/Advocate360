@@ -73,7 +73,7 @@ export interface OpponentStrategyPrediction {
   statutoryBasis: string;
   vulnerabilityInClientCase: string;
   bestCounterStrategy: string;
-  probabilityScore: number; // 0 - 100
+  probabilityScore?: number; // Requires empirical trial record analysis
 }
 
 export interface UniversalLegalAnalysis {
@@ -146,7 +146,7 @@ export interface UniversalLegalAnalysis {
     estimatedDurationMonths: number;
     estimatedCostINR: string;
     complexityRating: 'Low' | 'Medium' | 'High' | 'Severe';
-    successProbabilityPercentage: number;
+    successProbabilityPercentage?: number;
     preventiveAdvice: string[];
   };
 }
@@ -884,7 +884,7 @@ export class UniversalLegalIntelligenceEngine {
       statutoryBasis: 'Section 3 Limitation Act / Non-joinder of Necessary Parties under CPC',
       vulnerabilityInClientCase: 'Absence of registered documentary evidence for initial ancestral possession / non-mutation.',
       bestCounterStrategy: 'File immediate application for certified copies under RTI, issue statutory legal notice, and seek interim injunction.',
-      probabilityScore: 78
+      probabilityScore: undefined
     };
 
     // Step 10: Time, Cost & Risk Prediction
@@ -892,7 +892,7 @@ export class UniversalLegalIntelligenceEngine {
       estimatedDurationMonths: 4,
       estimatedCostINR: '₹15,000 - ₹45,000',
       complexityRating: 'Medium' as const,
-      successProbabilityPercentage: 82,
+      successProbabilityPercentage: undefined,
       preventiveAdvice: [
         'Obtain Encumbrance Certificate (EC) immediately for 30 years to verify if third-party mortgages exist.',
         'File protest petition / caveat before Sub-Registrar and Tahsildar to prevent further fraudulent mutations.',
@@ -917,7 +917,7 @@ export class UniversalLegalIntelligenceEngine {
       evidenceMatrix: {
         availableEvidence: ['Client Oral Statement', 'Initial Notice / Document Excerpt'],
         missingEvidence,
-        evidenceStrengthScore: 65
+        evidenceStrengthScore: undefined
       },
       recommendedRemedies,
       strategyPredictions,

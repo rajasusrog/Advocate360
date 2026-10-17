@@ -15,8 +15,73 @@ import {
 import { TimelineNode, ContradictionItem } from '../types';
 import { SAMPLE_TIMELINE, SAMPLE_CONTRADICTIONS } from '../data/landingDemoData';
 
-export const TimelineAndContradictions: React.FC = () => {
+import { CaseFile } from '../types';
+import {
+  listTimelineEventsForMatter,
+  createTimelineEventInDb,
+  updateMatterInDb,
+} from '../lib/useMatterData';
+
+interface TimelineAndContradictionsProps {
+  selectedCase?: CaseFile | null;
+  chamberId?: string;
+}
+
+export const TimelineAndContradictions: React.FC<TimelineAndContradictionsProps> = ({ selectedCase, chamberId }) => {
   const [timelineNodes, setTimelineNodes] = useState<TimelineNode[]>([]);
+  const [loadingTimeline, setLoadingTimeline] = useState<boolean>(false);
+  const [timelineError, setTimelineError] = useState<string | null>(null);
+  const [timelineSuccess, setTimelineSuccess] = useState<string | null>(null);
+  const [isSavingNode, setIsSavingNode] = useState<boolean>(false);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    const parseMatterTimelineStrings = (): TimelineNode[] => {
+      if (selectedCase && Array.isArray(selectedCase.timeline) && selectedCase.timeline.length > 0) {
+        return selectedCase.timeline.map((item, idx) => {
+          const parts = item.split(': ');
+          return {
+            id: `t-${idx}`,
+            date: parts[0] || 'Date pending',
+            event: parts.slice(1).join(': ') || item,
+            category: 'Property' as const,
+          };
+        });
+      }
+      return [];
+    };
+
+    if (!chamberId || !selectedCase?.id) {
+      setTimelineNodes(parseMatterTimelineStrings());
+      return;
+    }
+
+    setLoadingTimeline(true);
+    setTimelineError(null);
+    listTimelineEventsForMatter(chamberId, selectedCase.id)
+      .then((dbNodes) => {
+        if (cancelled) return;
+        if (dbNodes.length > 0) {
+          setTimelineNodes(dbNodes);
+        } else {
+          setTimelineNodes(parseMatterTimelineStrings());
+        }
+      })
+      .catch((err: any) => {
+        if (cancelled) return;
+        console.error('Failed to load timeline events from Supabase:', err);
+        setTimelineError(err?.message || 'Failed to load chronology events from database.');
+        setTimelineNodes(parseMatterTimelineStrings());
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingTimeline(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [chamberId, selectedCase?.id]);
+
   const [contradictions, setContradictions] = useState<ContradictionItem[]>([]);
 
   const handleLoadSampleTimeline = () => {
@@ -29,21 +94,59 @@ export const TimelineAndContradictions: React.FC = () => {
   const [newEvent, setNewEvent] = useState<string>('');
   const [newCategory, setNewCategory] = useState<TimelineNode['category']>('Property');
 
-  const handleAddTimelineNode = () => {
-    if (!newDate || !newEvent) return;
-    const newNode: TimelineNode = {
-      id: `t-${Date.now()}`,
-      date: newDate,
-      event: newEvent,
-      category: newCategory
-    };
-    setTimelineNodes([...timelineNodes, newNode].sort((a, b) => a.date.localeCompare(b.date)));
-    setNewDate('');
-    setNewEvent('');
+  const handleAddTimelineNode = async () => {
+    if (!newDate || !newEvent.trim() || isSavingNode) return;
+    setTimelineError(null);
+    setTimelineSuccess(null);
+
+    if (!chamberId || !selectedCase?.id) {
+      setTimelineError('Cannot save timeline event: select an active workspace matter first.');
+      return;
+    }
+
+    setIsSavingNode(true);
+    try {
+      const createdNode = await createTimelineEventInDb(chamberId, selectedCase.id, {
+        date: newDate,
+        event: newEvent.trim(),
+        category: newCategory,
+      });
+
+      const updatedNodes = [...timelineNodes, createdNode].sort((a, b) =>
+        a.date.localeCompare(b.date)
+      );
+      const formattedTimeline = updatedNodes.map((n) => `${n.date}: ${n.event}`);
+      await updateMatterInDb(chamberId, selectedCase.id, { timeline: formattedTimeline });
+
+      setTimelineNodes(updatedNodes);
+      setNewDate('');
+      setNewEvent('');
+      setTimelineSuccess(`Saved chronology event "${createdNode.event}" (${createdNode.date}) to PostgreSQL.`);
+      setTimeout(() => setTimelineSuccess(null), 4000);
+    } catch (err: any) {
+      console.error('Failed to persist timeline node to Supabase:', err);
+      setTimelineError(
+        err?.message || 'Failed to save timeline event to PostgreSQL. Your input has been preserved.'
+      );
+    } finally {
+      setIsSavingNode(false);
+    }
   };
 
   return (
     <div className="space-y-6">
+      {timelineError && (
+        <div role="alert" className="p-3 bg-[#FFF4F2] border-2 border-[#FF4444] text-xs text-[#FF4444] font-bold flex items-center justify-between">
+          <span>⚠️ {timelineError}</span>
+          <button onClick={() => setTimelineError(null)} className="underline ml-3">Dismiss</button>
+        </div>
+      )}
+      {timelineSuccess && (
+        <div role="status" className="p-3 bg-emerald-50 border-2 border-emerald-700 text-xs text-emerald-900 font-bold flex items-center justify-between">
+          <span>✓ {timelineSuccess}</span>
+          <button onClick={() => setTimelineSuccess(null)} className="underline ml-3">Dismiss</button>
+        </div>
+      )}
       {/* Editorial Header Banner */}
       <div className="bg-[#F5F2EF] text-[#1A1A1A] p-6 border-2 border-[#1A1A1A] shadow-xs">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -69,7 +172,9 @@ export const TimelineAndContradictions: React.FC = () => {
               <Clock className="w-4 h-4 text-[#B45309]" />
               <span>Case Chronology Timeline ({timelineNodes.length})</span>
             </h3>
-            <span className="text-[10px] font-mono font-bold text-[#B45309]">Auto-Sorted</span>
+            <span className="text-[10px] font-mono font-bold text-[#B45309]">
+              {loadingTimeline ? 'Syncing...' : 'Auto-Sorted'}
+            </span>
           </div>
 
           {/* Add Quick Node Box */}
@@ -92,9 +197,10 @@ export const TimelineAndContradictions: React.FC = () => {
             </div>
             <button
               onClick={handleAddTimelineNode}
-              className="w-full py-1.5 bg-[#1A1A1A] hover:bg-black text-amber-400 font-bold uppercase tracking-wider text-xs border border-[#1A1A1A]"
+              disabled={isSavingNode || !newDate || !newEvent.trim()}
+              className="w-full py-1.5 bg-[#1A1A1A] hover:bg-black text-amber-400 font-bold uppercase tracking-wider text-xs border border-[#1A1A1A] disabled:opacity-50"
             >
-              + Add Event
+              {isSavingNode ? 'Saving Event...' : '+ Add Event'}
             </button>
           </div>
 

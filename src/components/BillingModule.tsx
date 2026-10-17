@@ -50,8 +50,15 @@ import {
   Legend 
 } from 'recharts';
 import { CaseFile, ChamberProfile, ChamberRole, TimeLog, Invoice, InvoiceItem, InvoicePayment } from '../types';
-import { db, auth, cleanFirestoreData } from '../firebase';
-import { collection, doc, setDoc, deleteDoc, onSnapshot, getDocs } from 'firebase/firestore';
+import {
+  listTimeEntriesForWorkspace,
+  createTimeEntryInDb,
+  deleteTimeEntryInDb,
+  listInvoicesForWorkspace,
+  createInvoiceInDb,
+  deleteInvoiceInDb,
+  recordPaymentInDb,
+} from '../lib/useMatterData';
 import { logAuditEvent } from '../lib/auditLogger';
 
 interface BillingModuleProps {
@@ -211,8 +218,12 @@ export const BillingModule: React.FC<BillingModuleProps> = ({
 }) => {
   // State
   const [activeSubTab, setActiveSubTab] = useState<'overview' | 'timelogs' | 'invoices' | 'payments'>('timelogs');
-  const [timeLogs, setTimeLogs] = useState<TimeLog[]>(INITIAL_TIME_LOGS);
-  const [invoices, setInvoices] = useState<Invoice[]>(INITIAL_INVOICES);
+  const [timeLogs, setTimeLogs] = useState<TimeLog[]>(chamber ? [] : INITIAL_TIME_LOGS);
+  const [invoices, setInvoices] = useState<Invoice[]>(chamber ? [] : INITIAL_INVOICES);
+  const [billingLoading, setBillingLoading] = useState<boolean>(false);
+  const [billingError, setBillingError] = useState<string | null>(null);
+  const [billingSuccess, setBillingSuccess] = useState<string | null>(null);
+  const [isSavingBilling, setIsSavingBilling] = useState<boolean>(false);
   const [chamberRates, setChamberRates] = useState<{ [role: string]: number }>({
     'Senior Advocate': 4000,
     'Advocate': 2500,
@@ -325,46 +336,40 @@ export const BillingModule: React.FC<BillingModuleProps> = ({
     }
   }, [selectedCaseId]);
 
-  // Firestore Sync for TimeLogs and Invoices
+  // Supabase PostgreSQL Sync for TimeLogs, Invoices, and Payments
   useEffect(() => {
-    if (!chamber) return;
-
-    try {
-      // 1. Sync Time Logs
-      const timeLogsCol = collection(db, 'chambers', chamber.id, 'timeLogs');
-      const unsubLogs = onSnapshot(timeLogsCol, (snapshot) => {
-        if (!snapshot.empty) {
-          const loaded: TimeLog[] = [];
-          snapshot.forEach((doc) => {
-            loaded.push({ id: doc.id, ...doc.data() } as TimeLog);
-          });
-          // Sort newest first
-          loaded.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-          setTimeLogs(loaded);
-        }
-      }, (err) => console.warn('Firestore timeLogs sync notice:', err));
-
-      // 2. Sync Invoices
-      const invoicesCol = collection(db, 'chambers', chamber.id, 'invoices');
-      const unsubInvoices = onSnapshot(invoicesCol, (snapshot) => {
-        if (!snapshot.empty) {
-          const loadedInv: Invoice[] = [];
-          snapshot.forEach((doc) => {
-            loadedInv.push({ id: doc.id, ...doc.data() } as Invoice);
-          });
-          loadedInv.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-          setInvoices(loadedInv);
-        }
-      }, (err) => console.warn('Firestore invoices sync notice:', err));
-
-      return () => {
-        unsubLogs();
-        unsubInvoices();
-      };
-    } catch (err) {
-      console.warn('Billing Firestore sync warning:', err);
+    if (!chamber?.id) {
+      setTimeLogs(INITIAL_TIME_LOGS);
+      setInvoices(INITIAL_INVOICES);
+      return;
     }
-  }, [chamber]);
+
+    let cancelled = false;
+    setBillingLoading(true);
+    setBillingError(null);
+
+    Promise.all([
+      listTimeEntriesForWorkspace(chamber.id, cases),
+      listInvoicesForWorkspace(chamber.id, cases),
+    ])
+      .then(([loadedLogs, loadedInvoices]) => {
+        if (cancelled) return;
+        setTimeLogs(loadedLogs);
+        setInvoices(loadedInvoices);
+      })
+      .catch((err: any) => {
+        if (cancelled) return;
+        console.error('Billing Supabase load error:', err);
+        setBillingError(err?.message || 'Failed to load billing records from PostgreSQL.');
+      })
+      .finally(() => {
+        if (!cancelled) setBillingLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [chamber?.id, cases]);
 
   // Timer Tick
   useEffect(() => {
@@ -390,8 +395,10 @@ export const BillingModule: React.FC<BillingModuleProps> = ({
 
   // Save Timer to Time Log
   const handleSaveTimer = async () => {
+    setBillingError(null);
+    setBillingSuccess(null);
     if (timerSeconds < 10) {
-      alert('Timer duration is too short to log (minimum 10 seconds).');
+      setBillingError('Timer duration is too short to log (minimum 10 seconds).');
       return;
     }
 
@@ -399,8 +406,7 @@ export const BillingModule: React.FC<BillingModuleProps> = ({
     const finalRate = chamberRates[timerRole] || 2500;
     const currentCase = cases.find(c => c.id === timerCaseId) || cases[0];
 
-    const newLog: TimeLog = {
-      id: `tl-${Date.now()}`,
+    const logPayload: Omit<TimeLog, 'id' | 'createdAt'> = {
       caseId: timerCaseId,
       caseTitle: currentCase ? currentCase.title : 'General Legal Counsel',
       advocateName: timerAdvocate,
@@ -412,94 +418,121 @@ export const BillingModule: React.FC<BillingModuleProps> = ({
       totalAmount: Math.round(Math.max(calculatedHours, 0.25) * finalRate),
       date: new Date().toISOString().split('T')[0],
       billable: timerBillable,
-      status: 'Unbilled',
-      createdAt: new Date().toISOString()
+      status: 'Unbilled'
     };
 
-    // Update local state
-    setTimeLogs(prev => [newLog, ...prev]);
-    setTimerRunning(false);
-    setTimerSeconds(0);
-    setTimerDescription('');
+    if (!chamber?.id) {
+      setBillingError('Cannot save time entry: active workspace is required.');
+      return;
+    }
 
-    // Persist to Firestore if chamber available
-    if (chamber) {
-      try {
-        await setDoc(doc(db, 'chambers', chamber.id, 'timeLogs', newLog.id), cleanFirestoreData(newLog));
-        logAuditEvent('CASE_UPDATE', `Logged ${newLog.hours} hrs for matter: ${newLog.caseTitle}`);
-      } catch (err) {
-        console.error('Save time log error:', err);
-      }
+    setIsSavingBilling(true);
+    try {
+      const saved = await createTimeEntryInDb(chamber.id, logPayload, cases);
+      setTimeLogs(prev => [saved, ...prev]);
+      setTimerRunning(false);
+      setTimerSeconds(0);
+      setTimerDescription('');
+      logAuditEvent('CASE_UPDATE', `Logged ${saved.hours} hrs for matter: ${saved.caseTitle}`, {
+        chamberId: chamber.id,
+        caseId: saved.caseId,
+      });
+      setBillingSuccess(`Saved timer entry (${saved.hours} hrs) to PostgreSQL.`);
+      setTimeout(() => setBillingSuccess(null), 4000);
+    } catch (err: any) {
+      console.error('Save time log error:', err);
+      setBillingError(err?.message || 'Failed to save timer entry to PostgreSQL.');
+    } finally {
+      setIsSavingBilling(false);
     }
   };
 
   // Add Manual Time Log
   const handleCreateManualLog = async () => {
-    if (!newLogData.description) {
-      alert('Please enter a task description.');
+    setBillingError(null);
+    setBillingSuccess(null);
+    if (!newLogData.description.trim()) {
+      setBillingError('Please enter a task description.');
+      return;
+    }
+
+    if (!chamber?.id) {
+      setBillingError('Cannot save time entry: active workspace is required.');
       return;
     }
 
     const currentCase = cases.find(c => c.id === newLogData.caseId) || cases[0];
-    const newLog: TimeLog = {
-      id: `tl-${Date.now()}`,
+    const logPayload: Omit<TimeLog, 'id' | 'createdAt'> = {
       caseId: newLogData.caseId,
       caseTitle: currentCase ? currentCase.title : 'General Legal Counsel',
       advocateName: newLogData.advocateName,
       advocateRole: newLogData.advocateRole,
       taskCategory: newLogData.taskCategory,
-      description: newLogData.description,
+      description: newLogData.description.trim(),
       hours: Number(newLogData.hours),
       hourlyRate: Number(newLogData.hourlyRate),
       totalAmount: Math.round(Number(newLogData.hours) * Number(newLogData.hourlyRate)),
       date: newLogData.date,
       billable: newLogData.billable,
-      status: 'Unbilled',
-      createdAt: new Date().toISOString()
+      status: 'Unbilled'
     };
 
-    setTimeLogs(prev => [newLog, ...prev]);
-    setIsLogModalOpen(false);
-    setNewLogData({
-      caseId: selectedCaseId || (cases[0]?.id || ''),
-      taskCategory: 'Document Review',
-      advocateName: chamber?.advocateName || 'Adv. Advocate360',
-      advocateRole: 'Senior Advocate',
-      description: '',
-      hours: 1,
-      hourlyRate: 3500,
-      date: new Date().toISOString().split('T')[0],
-      billable: true
-    });
-
-    if (chamber) {
-      try {
-        await setDoc(doc(db, 'chambers', chamber.id, 'timeLogs', newLog.id), cleanFirestoreData(newLog));
-        logAuditEvent('CASE_UPDATE', `Logged ${newLog.hours} manual hrs: ${newLog.taskCategory}`);
-      } catch (err) {
-        console.error('Firestore log creation error:', err);
-      }
+    setIsSavingBilling(true);
+    try {
+      const saved = await createTimeEntryInDb(chamber.id, logPayload, cases);
+      setTimeLogs(prev => [saved, ...prev]);
+      setIsLogModalOpen(false);
+      setNewLogData({
+        caseId: selectedCaseId || (cases[0]?.id || ''),
+        taskCategory: 'Document Review',
+        advocateName: chamber?.advocateName || 'Adv. Advocate360',
+        advocateRole: 'Senior Advocate',
+        description: '',
+        hours: 1,
+        hourlyRate: 3500,
+        date: new Date().toISOString().split('T')[0],
+        billable: true
+      });
+      logAuditEvent('CASE_UPDATE', `Logged ${saved.hours} manual hrs: ${saved.taskCategory}`, {
+        chamberId: chamber.id,
+        caseId: saved.caseId,
+      });
+      setBillingSuccess(`Saved ${saved.hours}h time entry to PostgreSQL.`);
+      setTimeout(() => setBillingSuccess(null), 4000);
+    } catch (err: any) {
+      console.error('Supabase log creation error:', err);
+      setBillingError(
+        err?.message || 'Failed to save time entry to PostgreSQL. Your input has been preserved.'
+      );
+    } finally {
+      setIsSavingBilling(false);
     }
   };
 
   // Delete Time Log
   const handleDeleteTimeLog = async (logId: string) => {
-    if (!confirm('Are you sure you want to delete this time entry?')) return;
+    if (!chamber?.id) return;
+    setBillingError(null);
+    setBillingSuccess(null);
+    const previousLogs = [...timeLogs];
     setTimeLogs(prev => prev.filter(l => l.id !== logId));
-    if (chamber) {
-      try {
-        await deleteDoc(doc(db, 'chambers', chamber.id, 'timeLogs', logId));
-      } catch (err) {
-        console.error('Delete time log error:', err);
-      }
+    try {
+      await deleteTimeEntryInDb(chamber.id, logId);
+      setBillingSuccess('Deleted time entry from PostgreSQL.');
+      setTimeout(() => setBillingSuccess(null), 3000);
+    } catch (err: any) {
+      console.error('Delete time log error:', err);
+      setTimeLogs(previousLogs);
+      setBillingError(err?.message || 'Failed to delete time entry from PostgreSQL.');
     }
   };
 
   // Open Invoice Builder pre-populated with selected time logs or current case
   const handleOpenInvoiceModalForSelectedLogs = () => {
+    setBillingError(null);
     const logsToConvert = timeLogs.filter(l => selectedLogIds.includes(l.id));
     if (logsToConvert.length === 0) {
-      alert('Please select at least one unbilled time entry to generate an invoice.');
+      setBillingError('Please select at least one unbilled time entry to generate an invoice.');
       return;
     }
 
@@ -533,6 +566,7 @@ export const BillingModule: React.FC<BillingModuleProps> = ({
 
   // Open blank invoice modal for case
   const handleOpenBlankInvoiceModal = () => {
+    setBillingError(null);
     const targetCase = cases.find(c => c.id === (filterCaseId !== 'all' ? filterCaseId : selectedCaseId)) || cases[0];
     
     // Auto pull unbilled logs for this case
@@ -558,7 +592,7 @@ export const BillingModule: React.FC<BillingModuleProps> = ({
     }
 
     setNewInvoiceData({
-      caseId: targetCase?.id || 'case-1',
+      caseId: targetCase?.id || '',
       clientName: targetCase?.clientName || 'Client Name',
       clientEmail: targetCase?.clientEmail || 'client@example.com',
       clientPhone: targetCase?.clientPhone || '+91 98000 00000',
@@ -602,8 +636,14 @@ export const BillingModule: React.FC<BillingModuleProps> = ({
 
   // Save Generated Invoice
   const handleSaveInvoice = async () => {
+    setBillingError(null);
+    setBillingSuccess(null);
     if (newInvoiceData.items.length === 0) {
-      alert('Please add at least one line item to the invoice.');
+      setBillingError('Please add at least one line item to the invoice.');
+      return;
+    }
+    if (!chamber?.id) {
+      setBillingError('Cannot save invoice: active workspace is required.');
       return;
     }
 
@@ -613,8 +653,7 @@ export const BillingModule: React.FC<BillingModuleProps> = ({
     const invNumber = `INV-${new Date().getFullYear()}-${(invoices.length + 1).toString().padStart(3, '0')}`;
     const targetCase = cases.find(c => c.id === newInvoiceData.caseId) || cases[0];
 
-    const newInvoice: Invoice = {
-      id: `inv-${Date.now()}`,
+    const invoicePayload: Omit<Invoice, 'id' | 'createdAt' | 'updatedAt'> = {
       invoiceNumber: invNumber,
       caseId: newInvoiceData.caseId,
       caseTitle: targetCase ? targetCase.title : 'Legal Matter',
@@ -643,55 +682,69 @@ export const BillingModule: React.FC<BillingModuleProps> = ({
         bankName: 'Axis Bank, High Court Branch',
         upiId: 'adv360chamber@axisbank'
       },
-      payments: [],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
+      payments: []
     };
 
-    // Update time log statuses to "Invoiced"
     const linkedLogIds = newInvoiceData.items.map(i => i.timeLogId).filter(Boolean) as string[];
-    setTimeLogs(prev => prev.map(l => linkedLogIds.includes(l.id) ? { ...l, status: 'Invoiced', invoiceId: newInvoice.id } : l));
 
-    setInvoices(prev => [newInvoice, ...prev]);
-    setSelectedLogIds([]);
-    setIsInvoiceModalOpen(false);
-
-    if (chamber) {
-      try {
-        await setDoc(doc(db, 'chambers', chamber.id, 'invoices', newInvoice.id), cleanFirestoreData(newInvoice));
-        // Batch update time logs in firestore
-        for (const logId of linkedLogIds) {
-          const logObj = timeLogs.find(l => l.id === logId);
-          if (logObj) {
-            await setDoc(doc(db, 'chambers', chamber.id, 'timeLogs', logId), cleanFirestoreData({
-              ...logObj,
-              status: 'Invoiced',
-              invoiceId: newInvoice.id
-            }));
-          }
-        }
-        logAuditEvent('DRAFT_CREATE', `Generated Invoice ${newInvoice.invoiceNumber} (₹${newInvoice.totalAmount})`);
-      } catch (err) {
-        console.error('Firestore save invoice error:', err);
-      }
+    setIsSavingBilling(true);
+    try {
+      const createdInvoice = await createInvoiceInDb(
+        chamber.id,
+        invoicePayload,
+        linkedLogIds,
+        cases
+      );
+      setTimeLogs(prev =>
+        prev.map(l =>
+          linkedLogIds.includes(l.id)
+            ? { ...l, status: 'Invoiced', invoiceId: createdInvoice.id }
+            : l
+        )
+      );
+      setInvoices(prev => [createdInvoice, ...prev]);
+      setSelectedLogIds([]);
+      setIsInvoiceModalOpen(false);
+      logAuditEvent(
+        'DRAFT_CREATE',
+        `Generated Invoice ${createdInvoice.invoiceNumber} (₹${createdInvoice.totalAmount})`,
+        { chamberId: chamber.id, caseId: createdInvoice.caseId }
+      );
+      setBillingSuccess(
+        `Issued Invoice ${createdInvoice.invoiceNumber} (₹${createdInvoice.totalAmount.toLocaleString('en-IN')}) in PostgreSQL.`
+      );
+      setTimeout(() => setBillingSuccess(null), 4000);
+    } catch (err: any) {
+      console.error('Supabase save invoice error:', err);
+      setBillingError(
+        err?.message || 'Failed to save invoice to PostgreSQL. Your input has been preserved.'
+      );
+    } finally {
+      setIsSavingBilling(false);
     }
   };
 
   // Delete Invoice
   const handleDeleteInvoice = async (invId: string) => {
-    if (!confirm('Are you sure you want to cancel and delete this invoice?')) return;
+    if (!chamber?.id) return;
+    setBillingError(null);
+    setBillingSuccess(null);
+    const previousInvoices = [...invoices];
     setInvoices(prev => prev.filter(i => i.id !== invId));
-    if (chamber) {
-      try {
-        await deleteDoc(doc(db, 'chambers', chamber.id, 'invoices', invId));
-      } catch (err) {
-        console.error('Delete invoice error:', err);
-      }
+    try {
+      await deleteInvoiceInDb(chamber.id, invId);
+      setBillingSuccess('Deleted invoice from PostgreSQL.');
+      setTimeout(() => setBillingSuccess(null), 3000);
+    } catch (err: any) {
+      console.error('Delete invoice error:', err);
+      setInvoices(previousInvoices);
+      setBillingError(err?.message || 'Failed to delete invoice from PostgreSQL.');
     }
   };
 
   // Open Record Payment Modal
   const handleOpenPaymentModal = (inv: Invoice) => {
+    setBillingError(null);
     setActiveInvoiceForPayment(inv);
     setPaymentData({
       amount: inv.balanceAmount,
@@ -706,46 +759,52 @@ export const BillingModule: React.FC<BillingModuleProps> = ({
   // Submit Payment
   const handleSubmitPayment = async () => {
     if (!activeInvoiceForPayment) return;
+    setBillingError(null);
+    setBillingSuccess(null);
     const payAmt = Number(paymentData.amount);
     if (payAmt <= 0) {
-      alert('Please enter a valid payment amount greater than zero.');
+      setBillingError('Please enter a valid payment amount greater than zero.');
+      return;
+    }
+    if (!chamber?.id) {
+      setBillingError('Cannot record payment: active workspace is required.');
       return;
     }
 
-    const newPayRecord: InvoicePayment = {
-      id: `pay-${Date.now()}`,
-      invoiceId: activeInvoiceForPayment.id,
-      amount: payAmt,
-      paymentDate: paymentData.paymentDate,
-      paymentMethod: paymentData.paymentMethod,
-      referenceNo: paymentData.referenceNo,
-      notes: paymentData.notes
-    };
+    setIsSavingBilling(true);
+    try {
+      const updatedInvoice = await recordPaymentInDb(
+        chamber.id,
+        activeInvoiceForPayment,
+        {
+          amount: payAmt,
+          paymentDate: paymentData.paymentDate,
+          paymentMethod: paymentData.paymentMethod,
+          referenceNo: paymentData.referenceNo,
+          notes: paymentData.notes
+        },
+        cases
+      );
 
-    const updatedPaid = activeInvoiceForPayment.paidAmount + payAmt;
-    const updatedBalance = Math.max(0, activeInvoiceForPayment.totalAmount - updatedPaid);
-    const updatedStatus: Invoice['status'] = updatedBalance === 0 ? 'Paid' : 'Partially Paid';
-
-    const updatedInvoice: Invoice = {
-      ...activeInvoiceForPayment,
-      paidAmount: updatedPaid,
-      balanceAmount: updatedBalance,
-      status: updatedStatus,
-      payments: [...(activeInvoiceForPayment.payments || []), newPayRecord],
-      updatedAt: new Date().toISOString()
-    };
-
-    setInvoices(prev => prev.map(i => i.id === updatedInvoice.id ? updatedInvoice : i));
-    setIsPaymentModalOpen(false);
-    setActiveInvoiceForPayment(null);
-
-    if (chamber) {
-      try {
-        await setDoc(doc(db, 'chambers', chamber.id, 'invoices', updatedInvoice.id), cleanFirestoreData(updatedInvoice));
-        logAuditEvent('CASE_UPDATE', `Recorded Payment ₹${payAmt} for Invoice ${updatedInvoice.invoiceNumber}`);
-      } catch (err) {
-        console.error('Record payment error:', err);
-      }
+      setInvoices(prev => prev.map(i => i.id === updatedInvoice.id ? updatedInvoice : i));
+      setIsPaymentModalOpen(false);
+      setActiveInvoiceForPayment(null);
+      logAuditEvent(
+        'CASE_UPDATE',
+        `Recorded Payment ₹${payAmt} for Invoice ${updatedInvoice.invoiceNumber}`,
+        { chamberId: chamber.id, caseId: updatedInvoice.caseId }
+      );
+      setBillingSuccess(
+        `Recorded payment ₹${payAmt.toLocaleString('en-IN')} for ${updatedInvoice.invoiceNumber} in PostgreSQL.`
+      );
+      setTimeout(() => setBillingSuccess(null), 4000);
+    } catch (err: any) {
+      console.error('Record payment error:', err);
+      setBillingError(
+        err?.message || 'Failed to record payment in PostgreSQL. Your input has been preserved.'
+      );
+    } finally {
+      setIsSavingBilling(false);
     }
   };
 
@@ -811,6 +870,18 @@ export const BillingModule: React.FC<BillingModuleProps> = ({
 
   return (
     <div className="space-y-6">
+      {billingError && (
+        <div role="alert" className="p-3 bg-[#FFF4F2] border-2 border-[#FF4444] text-xs text-[#FF4444] font-bold flex items-center justify-between">
+          <span>⚠️ {billingError}</span>
+          <button onClick={() => setBillingError(null)} className="underline ml-3">Dismiss</button>
+        </div>
+      )}
+      {billingSuccess && (
+        <div role="status" className="p-3 bg-emerald-50 border-2 border-emerald-700 text-xs text-emerald-900 font-bold flex items-center justify-between">
+          <span>✓ {billingSuccess}</span>
+          <button onClick={() => setBillingSuccess(null)} className="underline ml-3">Dismiss</button>
+        </div>
+      )}
       
       {/* Editorial Header & Chamber Billing Toolbar */}
       <div className="bg-[#F5F2EF] border-2 border-[#1A1A1A] p-5 sm:p-6 shadow-xs flex flex-col lg:flex-row lg:items-center justify-between gap-4">
@@ -820,7 +891,7 @@ export const BillingModule: React.FC<BillingModuleProps> = ({
               Chamber Financial Governance
             </span>
             <span className="text-xs text-[#555555] font-serif italic">
-              Matter-Wise Time Tracking & Invoicing Engine
+              {billingLoading ? 'Syncing PostgreSQL Ledger...' : 'Matter-Wise Time Tracking & Invoicing Engine'}
             </span>
           </div>
           <h1 className="font-serif text-2xl sm:text-3xl font-bold italic text-[#1A1A1A] flex items-center gap-2">
@@ -840,7 +911,10 @@ export const BillingModule: React.FC<BillingModuleProps> = ({
           </button>
 
           <button
-            onClick={() => setIsLogModalOpen(true)}
+            onClick={() => {
+              setBillingError(null);
+              setIsLogModalOpen(true);
+            }}
             className="px-3.5 py-2 bg-white hover:bg-slate-100 text-[#1A1A1A] border border-[#1A1A1A] text-xs font-bold font-mono uppercase tracking-wider flex items-center gap-1.5 transition-colors shadow-xs"
           >
             <Clock className="w-3.5 h-3.5 text-amber-600" />
@@ -1555,6 +1629,12 @@ export const BillingModule: React.FC<BillingModuleProps> = ({
               </button>
             </div>
 
+            {billingError && (
+              <div role="alert" className="p-2.5 bg-[#FFF4F2] border border-[#FF4444] text-xs font-mono font-bold text-[#FF4444]">
+                ⚠️ {billingError}
+              </div>
+            )}
+
             <div className="space-y-4 text-xs font-mono">
               <div>
                 <label className="block font-bold text-slate-700 mb-1">Matter / Case File</label>
@@ -1679,6 +1759,12 @@ export const BillingModule: React.FC<BillingModuleProps> = ({
                 <X className="w-5 h-5" />
               </button>
             </div>
+
+            {billingError && (
+              <div role="alert" className="p-2.5 bg-[#FFF4F2] border border-[#FF4444] text-xs font-mono font-bold text-[#FF4444]">
+                ⚠️ {billingError}
+              </div>
+            )}
 
             <div className="space-y-4 text-xs font-mono">
               
@@ -2080,6 +2166,12 @@ export const BillingModule: React.FC<BillingModuleProps> = ({
                 <X className="w-5 h-5" />
               </button>
             </div>
+
+            {billingError && (
+              <div role="alert" className="p-2.5 bg-[#FFF4F2] border border-[#FF4444] text-xs font-mono font-bold text-[#FF4444]">
+                ⚠️ {billingError}
+              </div>
+            )}
 
             <div className="space-y-4 text-xs font-mono">
               <div className="bg-[#F5F2EF] p-3 border border-slate-300 space-y-1">

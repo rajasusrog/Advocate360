@@ -13,11 +13,17 @@ import {
   Edit,
   AlertCircle
 } from 'lucide-react';
-import { DraftDocument, CrossExamQuestion } from '../types';
+import { DraftDocument, CrossExamQuestion, CaseFile } from '../types';
 import { apiPost } from '../lib/api';
 import { useTranslation, SUPPORTED_LANGUAGES, LanguageCode } from '../lib/multilingualEngine';
+import { saveDraftToMatterVault } from '../lib/useMatterData';
 
-export const DraftingAssistant: React.FC = () => {
+interface DraftingAssistantProps {
+  selectedCase?: CaseFile | null;
+  chamberId?: string;
+}
+
+export const DraftingAssistant: React.FC<DraftingAssistantProps> = ({ selectedCase, chamberId }) => {
   const { prefs, updatePreferences } = useTranslation();
   const [activeTab, setActiveTab] = useState<'drafting' | 'cross_exam'>('drafting');
 
@@ -35,59 +41,42 @@ export const DraftingAssistant: React.FC = () => {
     setDraftLanguage(newLang);
     updatePreferences({ draftingLanguage: newLang as LanguageCode });
   };
-  const [clientName, setClientName] = useState<string>('Ramesh Kumar');
-  const [oppositeParty, setOppositeParty] = useState<string>('Suresh Kumar & M/s Star Builders Pvt Ltd');
-  const [facts, setFacts] = useState<string>('Client Ramesh Kumar holds 50% undivided right in ancestral plot at Mylapore. Brother Suresh executed Sale Deed Doc No 4012/2026 without client consent.');
+
+  const [clientName, setClientName] = useState<string>(() => selectedCase?.clientName || '[Client Name Not Specified]');
+  const [oppositeParty, setOppositeParty] = useState<string>(() => selectedCase?.oppositeParty || '[Opposite Party Not Specified]');
+  const [facts, setFacts] = useState<string>(() => selectedCase?.summary || '[No matter summary recorded yet. Extract facts from uploaded documents.]');
   const [isDrafting, setIsDrafting] = useState<boolean>(false);
-  const [draftResult, setDraftResult] = useState<DraftDocument | null>({
-    id: 'draft-1',
-    title: 'Legal Notice for Cancellation of Unlawful Sale Deed',
-    type: 'Legal Notice',
-    facts: 'Ancestral property at Mylapore sold without client consent.',
-    legalGrounds: [
-      'Section 17 & 49 Registration Act (Compulsory Registration)',
-      'Section 44 Transfer of Property Act (Co-owner limits)',
-      'Hindu Succession Act Section 6 (Equal coparcenary rights)'
-    ],
-    prayer: 'Demand cancellation of Sale Deed Doc No 4012/2026 and refrain from entering property within 15 days.',
-    contentMarkdown: `# REGISTERED LEGAL NOTICE WITH ACKNOWLEDGEMENT DUE
+  const [isSavingVault, setIsSavingVault] = useState<boolean>(false);
+  const [saveVaultMsg, setSaveVaultMsg] = useState<string>('');
 
-**Date:** 29th July 2026  
-**To:**  
-1. Suresh Kumar, S/o Late K. Ramachandran, Mylapore, Chennai.  
-2. M/s Star Builders Pvt Ltd, Rep by Managing Director, Chennai.
+  useEffect(() => {
+    if (selectedCase) {
+      setClientName(selectedCase.clientName || '[Client Name Not Specified]');
+      setOppositeParty(selectedCase.oppositeParty || '[Opposite Party Not Specified]');
+      setFacts(selectedCase.summary || '[No matter summary recorded yet. Extract facts from uploaded documents.]');
+    }
+  }, [selectedCase?.id]);
 
-**From:**  
-Advocate360 AI Legal Chambers, High Court Madras.  
-On behalf of our Client: **Ramesh Kumar**
-
----
-
-### SUBJECT: DEMAND NOTICE FOR CANCELLATION OF SALE DEED DOC NO. 4012/2026 AND RESTORATION OF CO-OWNERSHIP RIGHTS
-
-Sir / Madam,
-
-Under instructions from and on behalf of our client, **Ramesh Kumar** (hereinafter referred to as "Our Client"), we hereby issue this Legal Notice as under:
-
-1. **TITLE & HERITAGE:** Our Client and Addressee No. 1 (Suresh Kumar) are the sons and sole legal heirs of Late K. Ramachandran, who was the absolute owner of 2400 sq.ft land situated at Survey No. 114/2, Mylapore, Chennai via Parent Title Deed Doc No. 1204/1995.
-
-2. **ILLEGAL EXECUTIONS:** Upon the demise of Late K. Ramachandran on 18-09-2020, Our Client and Addressee No. 1 became joint tenants-in-common holding equal undivided 50% share each. No registered partition has ever taken place.
-
-3. **IMPUGNED SALE DEED:** On 14-06-2026, Addressee No. 1 fraudulently executed Sale Deed Doc No. 4012/2026 transferring the ENTIRE extent of 2400 sq.ft to Addressee No. 2 (Star Builders) for ₹1.20 Crores without the knowledge, consent, or signature of Our Client.
-
-4. **STATUTORY VIOLATION:** The said Sale Deed is hit by Section 44 of the Transfer of Property Act and is null, void ab initio, and non-est in the eyes of law beyond the 50% share of Addressee No. 1.
-
-### DEMANDS & RECOURSE
-We hereby call upon you to comply with the following demands within **15 DAYS** from receipt of this notice:
-a) Execute a Cancellation Deed revoking Sale Deed Doc No. 4012/2026 at your cost.  
-b) Cease and desist all physical entry or construction activity on the Mylapore plot.
-
-Failing compliance within 15 days, Our Client has issued strict instructions to institute a Civil Suit for Declaration and Permanent Injunction, along with Criminal Proceedings under Sections 420/468/471 IPC at your sole risk and costs.
-
-**ADVOCATE FOR CLIENT**  
-Advocate360 AI Legal Chambers`,
-    createdAt: '2026-07-29'
-  });
+  const handleSaveToMatterVault = async () => {
+    if (!draftResult || !selectedCase || !chamberId) return;
+    setIsSavingVault(true);
+    setSaveVaultMsg('');
+    try {
+      await saveDraftToMatterVault(chamberId, selectedCase.id, {
+        id: draftResult.id,
+        title: draftResult.title || `${docType} - ${selectedCase.title}`,
+        type: docType,
+        contentMarkdown: draftResult.contentMarkdown || ''
+      });
+      setSaveVaultMsg('✓ Saved Draft to Matter Document Vault in Firestore!');
+    } catch (err: any) {
+      console.error('Save vault error:', err);
+      setSaveVaultMsg('Failed to save draft to vault.');
+    } finally {
+      setIsSavingVault(false);
+    }
+  };
+  const [draftResult, setDraftResult] = useState<DraftDocument | null>(null);
   const [copied, setCopied] = useState<boolean>(false);
   const [statusMsg, setStatusMsg] = useState<string>('');
 
@@ -411,11 +400,49 @@ b) Restrain **${oppositeParty || 'Opposite Party'}** from creating further third
               <div className="space-y-4">
                 <div className="flex items-center justify-between border-b border-[#1A1A1A] pb-3">
                   <div>
-                    <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#B45309]">{draftResult.type}</span>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#B45309]">{draftResult.type}</span>
+                      <span className={`text-[10px] font-mono font-bold uppercase px-2 py-0.5 border ${
+                        (draftResult as any).reviewStatus === 'Approved'
+                          ? 'bg-emerald-100 text-emerald-900 border-emerald-500'
+                          : 'bg-amber-100 text-amber-900 border-amber-500'
+                      }`}>
+                        Status: {(draftResult as any).reviewStatus || 'Draft (v1.0)'}
+                      </span>
+                    </div>
                     <h3 className="font-serif italic font-bold text-lg text-[#1A1A1A]">{draftResult.title}</h3>
                   </div>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      onClick={() => {
+                        const updated = {
+                          ...draftResult,
+                          reviewStatus: 'Approved',
+                          approvedVersion: 1,
+                          approvedAt: new Date().toISOString()
+                        };
+                        setDraftResult(updated as any);
+                        setStatusMsg('✓ Draft Revision Approved & Bound to Revision v1.0 by Advocate');
+                      }}
+                      className="bg-emerald-800 hover:bg-emerald-900 text-white text-xs font-bold uppercase tracking-wider px-3 py-1.5 border border-emerald-900 flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
+                    >
+                      <FileCheck className="w-3.5 h-3.5" />
+                      <span>Approve Revision</span>
+                    </button>
+
+                    {selectedCase && chamberId && (
+                      <button
+                        onClick={handleSaveToMatterVault}
+                        disabled={isSavingVault}
+                        className="bg-[#1A1A1A] hover:bg-black text-amber-400 text-xs font-bold uppercase tracking-wider px-3 py-1.5 border border-[#1A1A1A] flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs disabled:opacity-50"
+                        title="Save draft directly to Matter Document Vault"
+                      >
+                        <FileCheck className="w-3.5 h-3.5" />
+                        <span>{isSavingVault ? 'Saving...' : 'Save to Matter Vault'}</span>
+                      </button>
+                    )}
+
                     <button
                       onClick={handleCopyDraft}
                       className="bg-[#F5F2EF] hover:bg-[#1A1A1A] hover:text-amber-400 text-[#1A1A1A] border border-[#1A1A1A] text-xs font-bold uppercase tracking-wider px-3 py-1.5 flex items-center gap-1.5 transition-colors"
@@ -429,10 +456,17 @@ b) Restrain **${oppositeParty || 'Opposite Party'}** from creating further third
                       className="bg-[#1A1A1A] text-amber-400 text-xs font-bold uppercase tracking-wider px-3 py-1.5 border border-[#1A1A1A] flex items-center gap-1.5"
                     >
                       <Printer className="w-3.5 h-3.5" />
-                      <span>Print Draft</span>
+                      <span>Print / Export</span>
                     </button>
                   </div>
                 </div>
+
+                {saveVaultMsg && (
+                  <div className="p-2.5 bg-emerald-50 border border-emerald-400 text-emerald-900 font-mono text-xs font-bold flex items-center gap-2">
+                    <Check className="w-4 h-4 text-emerald-600" />
+                    <span>{saveVaultMsg}</span>
+                  </div>
+                )}
 
                 {/* Formatted Textarea / Document view */}
                 <div className="p-5 bg-[#F9F7F5] border border-[#1A1A1A] font-serif text-[#1A1A1A] text-xs whitespace-pre-wrap leading-relaxed max-h-[500px] overflow-y-auto">

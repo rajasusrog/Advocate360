@@ -15,21 +15,62 @@ import {
 import { LegalResearchResult } from '../types';
 import { apiPost } from '../lib/api';
 
-export const LegalResearch: React.FC = () => {
-  const [query, setQuery] = useState<string>('');
+import { CaseFile } from '../types';
+import { saveExtractedFactsToMatter } from '../lib/useMatterData';
+
+interface LegalResearchProps {
+  selectedCase?: CaseFile | null;
+  chamberId?: string;
+}
+
+export const LegalResearch: React.FC<LegalResearchProps> = ({ selectedCase, chamberId }) => {
+  const [query, setQuery] = useState<string>(() => {
+    if (selectedCase) {
+      return `Legal issues and precedent search for: ${selectedCase.title}`;
+    }
+    return '';
+  });
+
+  React.useEffect(() => {
+    if (selectedCase) {
+      setQuery(`Legal issues and precedent search for: ${selectedCase.title}`);
+    }
+  }, [selectedCase?.id]);
+
   const [jurisdiction, setJurisdiction] = useState<string>('Tamil Nadu / Indian Civil Laws');
   const [isSearching, setIsSearching] = useState<boolean>(false);
   const [researchResult, setResearchResult] = useState<LegalResearchResult | null>(null);
-
   const [copied, setCopied] = useState<boolean>(false);
+  const [saveStatusMsg, setSaveStatusMsg] = useState<string>('');
 
   const handleSearchResearch = async () => {
     if (!query.trim()) return;
+    const targetMatterId = selectedCase?.id;
     setIsSearching(true);
+    setSaveStatusMsg('');
     try {
-      const data = await apiPost<LegalResearchResult>('/api/ai/legal-research', { query, jurisdiction });
+      const data = await apiPost<LegalResearchResult>('/api/ai/legal-research', { 
+        query, 
+        jurisdiction, 
+        chamberId, 
+        caseId: targetMatterId 
+      });
+
       if (data.relevantProvisions) {
         setResearchResult(data);
+
+        // Auto-save research findings to matter if in active matter context
+        if (selectedCase && chamberId && targetMatterId === selectedCase.id) {
+          const researchNotes = [
+            `Research Query: ${query}`,
+            ...data.relevantProvisions.map(p => `${p.act} (${p.section}): ${p.explanation}`),
+            ...data.landmarkJudgments.map(j => `Citation: ${j.citation} - ${j.ratio}`)
+          ];
+          await saveExtractedFactsToMatter(chamberId, targetMatterId, {
+            overallAssessment: `Research Brief: ${data.relevantProvisions.length} provisions & ${data.landmarkJudgments.length} precedents retrieved`
+          });
+          setSaveStatusMsg('✓ Saved research findings to Matter File');
+        }
       }
     } catch (err) {
       console.error('Research Error:', err);
@@ -191,20 +232,33 @@ ${researchResult.supportingArguments.map(a => `- ${a}`).join('\n')}`;
               <div className="space-y-2">
                 <h4 className="text-xs font-bold uppercase tracking-[0.2em] text-[#1A1A1A] flex items-center gap-1.5">
                   <Scale className="w-4 h-4 text-[#B45309]" />
-                  <span>Landmark Judicial Precedents</span>
+                  <span>Landmark Judicial Precedents & Citation Verification</span>
                 </h4>
+                
+                {/* 5-Stage Verification Pipeline Indicator */}
+                <div className="p-3 bg-amber-50 border border-amber-300 text-[10px] font-mono space-y-1">
+                  <span className="font-bold text-[#B45309] block uppercase">Research Verification Pipeline Stages:</span>
+                  <div className="flex flex-wrap items-center gap-1.5 text-slate-700">
+                    <span className="bg-[#1A1A1A] text-white px-2 py-0.5">1. AI Suggestion</span>
+                    <span>→</span>
+                    <span className="bg-amber-200 text-amber-900 px-2 py-0.5">2. Source Retrieval (Not Configured)</span>
+                    <span>→</span>
+                    <span className="bg-slate-200 text-slate-700 px-2 py-0.5">3. Citation Metadata</span>
+                    <span>→</span>
+                    <span className="bg-slate-200 text-slate-700 px-2 py-0.5">4. Proposition Check</span>
+                    <span>→</span>
+                    <span className="bg-slate-200 text-slate-700 px-2 py-0.5">5. Human Review</span>
+                  </div>
+                </div>
+
                 <div className="space-y-2">
                   {researchResult.landmarkJudgments.map((j, idx) => (
-                    <div key={idx} className="p-3.5 bg-[#F5F2EF] border border-[#1A1A1A] text-xs space-y-1">
+                    <div key={idx} className="p-3.5 bg-[#F5F2EF] border border-[#1A1A1A] text-xs space-y-2">
                       <div className="flex flex-wrap items-center justify-between gap-2">
-                        <span className="font-bold text-[#1A1A1A]">{j.citation}</span>
+                        <span className="font-bold text-[#1A1A1A] font-serif text-sm">{j.citation}</span>
                         <div className="flex items-center gap-2">
-                          <span className={`text-[9px] font-mono font-bold uppercase px-2 py-0.5 border ${
-                            j.verificationStatus === 'VERIFIED SOURCE'
-                              ? 'bg-emerald-100 text-emerald-900 border-emerald-800'
-                              : 'bg-amber-100 text-amber-900 border-amber-800'
-                          }`}>
-                            {j.verificationStatus || 'UNVERIFIED — VERIFY BEFORE RELIANCE'}
+                          <span className="text-[9px] font-mono font-bold uppercase px-2 py-0.5 border bg-amber-100 text-amber-900 border-amber-800">
+                            Unverified Research Suggestion — Bare Act / Reporter Check Required
                           </span>
                           <span className="text-[10px] text-[#B45309] font-mono font-bold uppercase">{j.court} ({j.year})</span>
                         </div>

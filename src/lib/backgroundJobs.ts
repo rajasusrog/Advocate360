@@ -4,66 +4,46 @@ export type JobType =
   | 'VECTOR_EMBEDDING_INDEX'
   | 'LARGE_DOC_ANALYSIS'
   | 'DUPLICATE_CONTRADICTION_CHECK'
-  | 'RESEARCH_INDEXING';
+  | 'RESEARCH_INDEXING'
+  | 'SUMMARIZE_DOCS'
+  | 'EXTRACT_FACTS_DATES'
+  | 'FIND_CONTRADICTIONS'
+  | 'PREPARE_HEARING_BRIEF';
 
-export type JobStatus = 'queued' | 'processing' | 'completed' | 'failed';
+export type JobStatus = 'not_configured' | 'queued' | 'processing' | 'needs_review' | 'completed' | 'failed';
 
 export interface BackgroundJob {
   id: string;
-  type: JobType;
-  title: string;
-  status: JobStatus;
-  progress: number; // 0 to 100
+  jobId: string;
+  chamberId: string;
   matterId?: string;
-  queuedAt: string;
-  startedAt?: string;
-  completedAt?: string;
-  error?: string;
+  requestedBy: string;
+  operation: JobType;
+  title: string;
+  inputRecordIds?: string[];
+  inputVersions?: string[];
+  status: JobStatus;
+  progress?: number | null; // null/undefined represents indeterminate progress
+  timestamps: {
+    queuedAt: string;
+    startedAt?: string;
+    completedAt?: string;
+    failedAt?: string;
+  };
+  outputReferences?: string[];
+  errorInfo?: {
+    code: string;
+    message: string;
+    retryable: boolean;
+  };
+  idempotencyKey?: string;
   logs: string[];
 }
 
 type JobChangeListener = (jobs: BackgroundJob[]) => void;
 
 class EnterpriseBackgroundJobEngine {
-  private jobs: BackgroundJob[] = [
-    {
-      id: 'job-101',
-      type: 'OCR_PROCESSING',
-      title: 'OCR & Layout Parsing: Parent_Title_Deed_1995.pdf',
-      status: 'completed',
-      progress: 100,
-      matterId: 'case-1',
-      queuedAt: '2026-07-29 19:10:00',
-      startedAt: '2026-07-29 19:10:01',
-      completedAt: '2026-07-29 19:10:04',
-      logs: ['Received PDF binary stream', 'Ran Tesseract 5.0 Tamil & English OCR', 'Extracted 12 pages with stamp duty verification']
-    },
-    {
-      id: 'job-102',
-      type: 'VECTOR_EMBEDDING_INDEX',
-      title: 'Vector Embedding Indexing: 1995 Parent Deed & Tax Receipts',
-      status: 'completed',
-      progress: 100,
-      matterId: 'case-1',
-      queuedAt: '2026-07-29 19:10:05',
-      startedAt: '2026-07-29 19:10:06',
-      completedAt: '2026-07-29 19:10:08',
-      logs: ['Generated 1,536-dim text-embedding-004 vectors', 'Pushed 48 chunks to LegalOS Vector DB']
-    },
-    {
-      id: 'job-103',
-      type: 'DUPLICATE_CONTRADICTION_CHECK',
-      title: 'Contradiction & Boundary Variance Cross-Analysis',
-      status: 'completed',
-      progress: 100,
-      matterId: 'case-1',
-      queuedAt: '2026-07-29 19:11:00',
-      startedAt: '2026-07-29 19:11:01',
-      completedAt: '2026-07-29 19:11:03',
-      logs: ['Cross-referenced 1995 deed boundary against 2026 agreement', 'Flagged 120 sq ft survey variance in South boundary']
-    }
-  ];
-
+  private jobs: BackgroundJob[] = [];
   private listeners: Set<JobChangeListener> = new Set();
 
   public subscribe(cb: JobChangeListener): () => void {
@@ -76,57 +56,119 @@ class EnterpriseBackgroundJobEngine {
     this.listeners.forEach(cb => cb(list));
   }
 
-  public getJobs(): BackgroundJob[] {
-    return [...this.jobs];
+  public getJobs(chamberId?: string, matterId?: string): BackgroundJob[] {
+    let list = [...this.jobs];
+    if (chamberId) {
+      list = list.filter(j => j.chamberId === chamberId);
+    }
+    if (matterId) {
+      list = list.filter(j => j.matterId === matterId);
+    }
+    return list;
   }
 
-  public enqueueJob(type: JobType, title: string, matterId?: string): BackgroundJob {
+  public enqueueJob(params: {
+    operation: JobType;
+    title: string;
+    chamberId: string;
+    matterId?: string;
+    requestedBy?: string;
+    inputRecordIds?: string[];
+    inputVersions?: string[];
+    idempotencyKey?: string;
+  }): { job: BackgroundJob; isDuplicate: boolean } {
+    const key = params.idempotencyKey || `${params.chamberId}_${params.matterId || 'general'}_${params.operation}_${(params.inputRecordIds || []).sort().join(',')}`;
+
+    // Prevent duplicate submission if an identical job is active
+    const existing = this.jobs.find(j => 
+      j.idempotencyKey === key && (j.status === 'queued' || j.status === 'processing')
+    );
+
+    if (existing) {
+      return { job: existing, isDuplicate: true };
+    }
+
+    const nowIso = new Date().toISOString();
+    const jobId = `job-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+
     const newJob: BackgroundJob = {
-      id: `job-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-      type,
-      title,
+      id: jobId,
+      jobId,
+      chamberId: params.chamberId,
+      matterId: params.matterId,
+      requestedBy: params.requestedBy || 'authorized_lawyer',
+      operation: params.operation,
+      title: params.title,
+      inputRecordIds: params.inputRecordIds || [],
+      inputVersions: params.inputVersions || [],
       status: 'queued',
-      progress: 0,
-      matterId,
-      queuedAt: new Date().toISOString().substring(0, 19).replace('T', ' '),
-      logs: [`Enqueued job ${type}`]
+      progress: null, // Indeterminate progress initially
+      timestamps: {
+        queuedAt: nowIso
+      },
+      idempotencyKey: key,
+      logs: [`Enqueued operation "${params.operation}" for matter ${params.matterId || 'Chamber-Wide'}`]
     };
 
     this.jobs.unshift(newJob);
     this.notify();
-
-    // Auto-process in background asynchronously
-    setTimeout(() => {
-      this.startJob(newJob.id);
-    }, 500);
-
-    return newJob;
+    return { job: newJob, isDuplicate: false };
   }
 
-  private startJob(jobId: string) {
+  public startJob(jobId: string, logMessage?: string) {
     const job = this.jobs.find(j => j.id === jobId);
     if (!job) return;
 
     job.status = 'processing';
-    job.startedAt = new Date().toISOString().substring(0, 19).replace('T', ' ');
-    job.logs.push('Worker process picked up job from task queue');
+    job.timestamps.startedAt = new Date().toISOString();
+    if (logMessage) {
+      job.logs.push(logMessage);
+    }
     this.notify();
+  }
 
-    let prog = 10;
-    const interval = setInterval(() => {
-      prog += 30;
-      job.progress = Math.min(prog, 100);
-      job.logs.push(`Progress: ${job.progress}% - processing chunks`);
-      this.notify();
+  public completeJob(jobId: string, outputReferences: string[], logMessage?: string) {
+    const job = this.jobs.find(j => j.id === jobId);
+    if (!job) return;
 
-      if (prog >= 100) {
-        clearInterval(interval);
-        job.status = 'completed';
-        job.completedAt = new Date().toISOString().substring(0, 19).replace('T', ' ');
-        job.logs.push('Job executed successfully with 0 errors');
-        this.notify();
-      }
-    }, 600);
+    job.status = 'completed';
+    job.progress = 100;
+    job.outputReferences = outputReferences;
+    job.timestamps.completedAt = new Date().toISOString();
+    if (logMessage) {
+      job.logs.push(logMessage);
+    }
+    this.notify();
+  }
+
+  public failJob(jobId: string, errorMessage: string, retryable = true) {
+    const job = this.jobs.find(j => j.id === jobId);
+    if (!job) return;
+
+    job.status = 'failed';
+    job.progress = 0;
+    job.timestamps.failedAt = new Date().toISOString();
+    job.errorInfo = {
+      code: 'EXECUTION_FAILED',
+      message: errorMessage,
+      retryable
+    };
+    job.logs.push(`Error: ${errorMessage}`);
+    this.notify();
+  }
+
+  public retryJob(jobId: string): BackgroundJob | null {
+    const job = this.jobs.find(j => j.id === jobId);
+    if (!job || job.status !== 'failed') return null;
+
+    job.status = 'queued';
+    job.progress = null;
+    job.errorInfo = undefined;
+    job.timestamps.queuedAt = new Date().toISOString();
+    job.timestamps.failedAt = undefined;
+    job.logs.push(`Retrying job ${job.jobId} after failure`);
+    this.notify();
+    return job;
   }
 }
 

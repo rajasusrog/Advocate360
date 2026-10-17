@@ -21,13 +21,23 @@ import { logAuditEvent } from '../lib/auditLogger';
 import { legalIntelligenceEngine, UniversalLegalAnalysis } from '../lib/legalIntelligenceEngine';
 import { Brain } from 'lucide-react';
 
-export const DocumentAnalyzer: React.FC = () => {
+import { CaseFile } from '../types';
+import { saveExtractedFactsToMatter } from '../lib/useMatterData';
+import { PageHeader } from './ui/PageHeader';
+
+interface DocumentAnalyzerProps {
+  selectedCase?: CaseFile | null;
+  chamberId?: string;
+}
+
+export const DocumentAnalyzer: React.FC<DocumentAnalyzerProps> = ({ selectedCase, chamberId }) => {
   const [activeSubTab, setActiveSubTab] = useState<'case_bundle' | 'judgment'>('case_bundle');
   const [documentText, setDocumentText] = useState<string>('');
   const [fileName, setFileName] = useState<string>('');
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
   const [analysisResult, setAnalysisResult] = useState<DocumentAnalysisResult | null>(null);
   const [uleAnalysis, setUleAnalysis] = useState<UniversalLegalAnalysis | null>(null);
+  const [saveStatusMsg, setSaveStatusMsg] = useState<string>('');
 
   const handleLoadSampleDoc = () => {
     setDocumentText(`SALE DEED DOC NO 4012/2026 SUB REGISTRAR OFFICE MYLAPORE
@@ -58,22 +68,42 @@ JUDGMENT
 
   const handleAnalyzeDoc = async () => {
     if (!documentText.trim()) return;
+    const targetMatterId = selectedCase?.id;
     setIsAnalyzing(true);
+    setSaveStatusMsg('');
     try {
       const uleData = legalIntelligenceEngine.analyzeFacts(documentText);
       setUleAnalysis(uleData);
 
-      const data = await apiPost<DocumentAnalysisResult>('/api/ai/analyze-document', { documentText, fileName });
+      const data = await apiPost<DocumentAnalysisResult>('/api/ai/analyze-document', { 
+        documentText, 
+        fileName, 
+        chamberId, 
+        caseId: targetMatterId 
+      });
+
       if (data.keyFacts) {
         setAnalysisResult(data);
-        
+
+        // Save extracted facts to matter if in active matter context
+        if (selectedCase && chamberId && targetMatterId === selectedCase.id) {
+          await saveExtractedFactsToMatter(chamberId, targetMatterId, {
+            summary: uleData?.inputFactSummary || `Document Bundle Analysis for ${fileName || 'Uploaded Document'}`,
+            facts: data.keyFacts || uleData?.rootCauses || [],
+            timeline: (data.timelineEvents || []).map(t => ({ date: t.date, event: t.description })),
+            riskFactors: uleData?.rootCauses || [],
+            favourableFactors: data.importantClauses || []
+          });
+          setSaveStatusMsg('✓ Extracted facts & chronology persisted to Matter Record');
+        }
+
         // Autonomous Multi-Agent Pipeline Dispatch via Central Event Bus
-        eventBus.publish('DOCUMENT_UPLOADED', { fileName, documentText: documentText.substring(0, 200) });
-        eventBus.publish('FACT_EXTRACTED', { keyFactsCount: data.keyFacts.length });
-        eventBus.publish('TIMELINE_UPDATED', { events: data.timelineEvents });
-        eventBus.publish('AI_MEMORY_UPDATED', { summary: `Analyzed document ${fileName || 'Bundle'} containing ${data.keyFacts.length} facts.` });
+        eventBus.publish('DOCUMENT_UPLOADED', { chamberId, matterId: targetMatterId, fileName, documentText: documentText.substring(0, 200) });
+        eventBus.publish('FACT_EXTRACTED', { chamberId, matterId: targetMatterId, keyFactsCount: data.keyFacts.length });
+        eventBus.publish('TIMELINE_UPDATED', { chamberId, matterId: targetMatterId, events: data.timelineEvents });
+        eventBus.publish('AI_MEMORY_UPDATED', { chamberId, matterId: targetMatterId, summary: `Analyzed document ${fileName || 'Bundle'} containing ${data.keyFacts.length} facts.` });
         
-        logAuditEvent('DOCUMENT_VIEW', `Autonomous AI Pipeline triggered for uploaded file: ${fileName || 'Case Bundle'}`);
+        logAuditEvent('DOCUMENT_VIEW', `Autonomous AI Pipeline triggered for uploaded file: ${fileName || 'Case Bundle'}`, { chamberId, caseId: targetMatterId });
       }
     } catch (err) {
       console.error('Doc Analysis Error:', err);
@@ -99,41 +129,32 @@ JUDGMENT
 
   return (
     <div className="space-y-6">
-      {/* Editorial Top Banner */}
-      <div className="bg-[#F5F2EF] text-[#1A1A1A] p-6 border-2 border-[#1A1A1A] shadow-xs">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div>
-            <div className="inline-flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.2em] bg-[#1A1A1A] text-white px-2.5 py-0.5 mb-2">
-              <FileSearch className="w-3.5 h-3.5 text-amber-400" />
-              <span>Features #2 & #14 • Multi-Page Document & Judgment Analyzer</span>
-            </div>
-            <h1 className="font-serif text-3xl font-light italic text-[#1A1A1A]">AI Case File & Judgment Intelligence</h1>
-            <p className="text-xs text-[#555555] leading-relaxed mt-1 max-w-2xl">
-              Upload or paste multi-page legal documents (Sale deeds, FIRs, Notices, Agreements, 150-page Judgments). Advocate360 AI extracts 15 key facts, chronologies, contradictions, missing evidence, and court ratio.
-            </p>
-          </div>
-
-          {/* Sub Tab Switcher */}
-          <div className="flex items-center bg-[#1A1A1A] p-1 border border-[#1A1A1A]">
+      {/* Clean Page Header */}
+      <PageHeader
+        title="Document Analysis & Judgment Intelligence"
+        description="Extract facts, chronologies, contradictions, missing evidence, and ratio decidendi from matter documents and judgments."
+        badgeText="Document Processing"
+        secondaryActions={
+          <div className="flex items-center bg-slate-100 p-1 rounded-md border border-slate-200">
             <button
               onClick={() => setActiveSubTab('case_bundle')}
-              className={`px-3 py-1.5 text-xs font-bold uppercase tracking-wider transition-all ${
-                activeSubTab === 'case_bundle' ? 'bg-[#B45309] text-white' : 'text-slate-300 hover:text-white'
+              className={`px-3 py-1 text-xs font-medium rounded-sm transition-colors cursor-pointer ${
+                activeSubTab === 'case_bundle' ? 'bg-white text-slate-900 shadow-2xs font-semibold' : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              Case Document Bundle
+              Document Bundle
             </button>
             <button
               onClick={() => setActiveSubTab('judgment')}
-              className={`px-3 py-1.5 text-xs font-bold uppercase tracking-wider transition-all ${
-                activeSubTab === 'judgment' ? 'bg-[#B45309] text-white' : 'text-slate-300 hover:text-white'
+              className={`px-3 py-1 text-xs font-medium rounded-sm transition-colors cursor-pointer ${
+                activeSubTab === 'judgment' ? 'bg-white text-slate-900 shadow-2xs font-semibold' : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              Judgment Ratio Analyzer
+              Judgment Ratio
             </button>
           </div>
-        </div>
-      </div>
+        }
+      />
 
       {/* CASE BUNDLE SUB TAB */}
       {activeSubTab === 'case_bundle' && (

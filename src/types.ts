@@ -45,7 +45,7 @@ export interface AuditLog {
   chamberId: string;
   actorUid: string;
   actorEmail: string;
-  action: 'CASE_CREATE' | 'CASE_UPDATE' | 'DOCUMENT_UPLOAD' | 'DOCUMENT_DELETE' | 'ROLE_CHANGE' | 'AI_GENERATION' | 'DRAFT_CREATE';
+  action: 'CASE_CREATE' | 'CASE_UPDATE' | 'DOCUMENT_UPLOAD' | 'DOCUMENT_UPDATE' | 'DOCUMENT_VIEW' | 'DOCUMENT_DELETE' | 'ROLE_CHANGE' | 'AI_GENERATION' | 'DRAFT_CREATE' | 'RESTORE_VERSION' | 'EXPORT_PDF' | 'PREPARATION_SIGN' | 'BACKUP_CREATE' | 'CONFLICT_SEARCH' | 'DOCUMENT_CREATE';
   details: string;
   timestamp: string;
 }
@@ -89,7 +89,7 @@ export interface CaseFile {
   title: string;
   caseNumber?: string;
   caseType: 'Property Dispute' | 'Contract & Recovery' | 'Criminal / FIR' | 'Family & Matrimonial' | 'Corporate & Civil' | 'Other';
-  status: 'Intake' | 'Analysis' | 'Research' | 'Drafting' | 'Pending Hearing' | 'Closed';
+  status: 'Intake' | 'Analysis' | 'Research' | 'Drafting' | 'Pending Hearing' | 'Closed' | 'Archived';
   clientName: string;
   clientPhone?: string;
   clientEmail?: string;
@@ -99,11 +99,23 @@ export interface CaseFile {
   nextHearingDate?: string;
   stage?: string;
   summary?: string;
+  timeline?: string[];
   caseAssessment?: CaseAssessment;
   memory?: MatterMemory;
   workflowStages?: WorkflowStageItem[];
   createdAt: string;
   updatedAt: string;
+  archivedAt?: string;
+  archivedReason?: string;
+  previousStatus?: string;
+  lastActivityDate?: string;
+}
+
+export interface ArchivePolicySettings {
+  enabled: boolean;
+  inactivityDays: number;
+  autoArchiveClosed: boolean;
+  lastSweepRun?: string;
 }
 
 export interface IntakeData {
@@ -228,18 +240,55 @@ export interface NotificationItem {
   severity?: 'high' | 'medium' | 'info';
 }
 
+export interface DocumentClauseDiff {
+  id: string;
+  clauseTitle: string;
+  status: 'added' | 'removed' | 'modified' | 'unmodified';
+  originalText?: string;
+  revisedText?: string;
+  explanation: string;
+}
+
+export interface DocumentVersion {
+  id: string;
+  versionNumber: number;
+  versionLabel: string;
+  timestamp: string;
+  author: string;
+  authorRole?: string;
+  changesSummary: string;
+  fileSize: string;
+  fileSizeBytes?: number;
+  filePath?: string;
+  mimeType?: string;
+  ocrStatus: 'Indexed' | 'Processing' | 'Failed' | 'Uploaded' | 'Processed' | string;
+  clauseCount: number;
+  content: string;
+  diffFromPrevious?: DocumentClauseDiff[];
+}
+
 export interface EnterpriseDoc {
   id: string;
+  workspaceId?: string;
+  matterId?: string;
   name: string;
   version: number;
   size: string;
+  fileSizeBytes?: number;
+  mimeType?: string;
+  filePath?: string;
+  storageBucket?: string;
   type: string;
   uploadedBy: string;
   uploadDate: string;
-  ocrStatus: 'Indexed' | 'Processing' | 'Failed';
+  ocrStatus: 'Indexed' | 'Processing' | 'Failed' | 'Uploaded' | 'Processed' | string;
+  processingStatus?: string;
+  reviewStatus?: string;
   isDuplicate?: boolean;
   watermarkEnabled?: boolean;
   expiringLinkUrl?: string;
+  content?: string;
+  versions?: DocumentVersion[];
 }
 
 export interface ConflictCheckResult {
@@ -361,6 +410,26 @@ export interface PracticeTask {
   status: 'Pending' | 'In Progress' | 'Completed';
   category: 'Hearing' | 'Drafting' | 'Client Follow-up' | 'Evidence Collection' | 'Fee Reminder';
   assignedTo?: string;
+  dependsOn?: string[]; // IDs of tasks that must be completed before this task can start
+  historicalDurationDays?: number; // Benchmarked completion time in days
+  suggestedBufferDays?: number; // AI suggested buffer days
+  bufferAlertReason?: string; // AI buffer reason
+}
+
+export interface DeadlineAlert {
+  id: string;
+  taskId: string;
+  taskTitle: string;
+  relatedHearingId?: string;
+  relatedHearingTitle?: string;
+  relatedHearingDate?: string;
+  severity: 'CRITICAL' | 'HIGH' | 'MODERATE' | 'ADVISORY';
+  suggestedBufferDays: number;
+  currentDeadline: string;
+  recommendedDeadline: string;
+  historicalDuration?: string;
+  reasoning: string;
+  suggestedAction: string;
 }
 
 export interface CalendarEvent {

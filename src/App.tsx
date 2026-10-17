@@ -1,55 +1,95 @@
-import React, { useState, useEffect } from 'react';
-import { onAuthStateChanged, User, db, auth, signInWithPopup, googleProvider, signOut, cleanFirestoreData } from './firebase';
-import { collection, doc, setDoc, getDoc, onSnapshot } from 'firebase/firestore';
-import { Header } from './components/Header';
-import { Navigation } from './components/Navigation';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
+import {
+  supabase,
+  signInWithGoogle,
+  signOut as supabaseSignOut,
+  isSupabaseConfigured,
+} from './lib/supabase';
+import {
+  createWorkspaceWithOwner,
+  fetchUserWorkspaceMembership,
+  listMattersForWorkspace,
+  createMatterInDb,
+  updateMatterInDb,
+  listTasksForWorkspace,
+  createTaskInDb,
+  updateTaskInDb,
+} from './lib/useMatterData';
+
+// Core UI Components
+import { Header, HeaderUser } from './components/Header';
 import { SidebarNav } from './components/SidebarNav';
-import { PracticeDashboard } from './components/PracticeDashboard';
-import { ClientIntake } from './components/ClientIntake';
-import { DocumentAnalyzer } from './components/DocumentAnalyzer';
-import { EvidenceIntelligence } from './components/EvidenceIntelligence';
-import { TimelineAndContradictions } from './components/TimelineAndContradictions';
-import { LegalResearch } from './components/LegalResearch';
-import { DraftingAssistant } from './components/DraftingAssistant';
-import { RiskAndLimitation } from './components/RiskAndLimitation';
-import { HearingBrief } from './components/HearingBrief';
-import { ClientPortal } from './components/ClientPortal';
-import { DocumentComparison } from './components/DocumentComparison';
-import { AgentChatDrawer } from './components/AgentChatDrawer';
-import { NewCaseModal } from './components/NewCaseModal';
 import { LandingPage } from './components/LandingPage';
 import { PracticeSetupModal } from './components/PracticeSetupModal';
-
-// Enterprise LegalOS Components
-import { KnowledgeGraph } from './components/KnowledgeGraph';
-import { AgentOrchestrator } from './components/AgentOrchestrator';
-import { ConflictChecker } from './components/ConflictChecker';
-import { AuditLogViewer } from './components/AuditLogViewer';
-import { ExecutiveAnalytics } from './components/ExecutiveAnalytics';
-import { PluginManager } from './components/PluginManager';
-import { OpsHealthDashboard } from './components/OpsHealthDashboard';
+import { PracticeDashboard } from './components/PracticeDashboard';
+import { ClientPortal } from './components/ClientPortal';
 import { DocumentRepository } from './components/DocumentRepository';
-import { AiMemoryInspector } from './components/AiMemoryInspector';
-import { WorkflowAutomation } from './components/WorkflowAutomation';
+import { BillingModule } from './components/BillingModule';
+import { ExecutiveAnalytics } from './components/ExecutiveAnalytics';
+import { LegalIntelligenceWorkspace } from './components/LegalIntelligenceWorkspace';
+import { SettingsView } from './components/SettingsView';
+import { MatterWorkspaceRoute } from './components/MatterWorkspaceRoute';
+import { AskAdvocateAssistant } from './components/AskAdvocateAssistant';
+
+// Modals & Utility Drawers
+import { NewCaseModal } from './components/NewCaseModal';
 import { GlobalSearchModal } from './components/GlobalSearchModal';
 import { NotificationCenter } from './components/NotificationCenter';
 import { RoleManagerModal } from './components/RoleManagerModal';
 import { DigitalSignatureDrawer } from './components/DigitalSignatureDrawer';
 import { MultilingualModal } from './components/MultilingualModal';
-import { MatterWorkspaceBar } from './components/MatterWorkspaceBar';
-import { LegalIntelligenceWorkspace } from './components/LegalIntelligenceWorkspace';
-import { BillingModule } from './components/BillingModule';
 import { QuickNotesDrawer } from './components/QuickNotesDrawer';
 
-import { CaseFile, AgentRole, IntakeData, ChamberProfile, UserProfile, CalendarEvent, PracticeTask, FeeRecord, ChamberRole } from './types';
-import { INITIAL_CASES, SAMPLE_CALENDAR, SAMPLE_TASKS, SAMPLE_FEES } from './data/landingDemoData';
+// Types & Data
+import {
+  CaseFile,
+  IntakeData,
+  ChamberProfile,
+  UserProfile,
+  CalendarEvent,
+  PracticeTask,
+  FeeRecord,
+  ChamberRole,
+  NotificationItem,
+} from './types';
+import {
+  INITIAL_CASES,
+  SAMPLE_CALENDAR,
+  SAMPLE_TASKS,
+  SAMPLE_FEES,
+  SAMPLE_NOTIFICATIONS,
+} from './data/landingDemoData';
 import { logAuditEvent } from './lib/auditLogger';
 import { hasPermission } from './lib/permissions';
-import { Scale, Sparkles } from 'lucide-react';
+import { Scale, AlertTriangle } from 'lucide-react';
+
+function mapSupabaseUser(sbUser: any): HeaderUser {
+  const fullName =
+    sbUser.user_metadata?.full_name ||
+    sbUser.user_metadata?.name ||
+    sbUser.email?.split('@')[0] ||
+    'Advocate';
+  const avatarUrl =
+    sbUser.user_metadata?.avatar_url || sbUser.user_metadata?.picture || undefined;
+
+  return {
+    id: sbUser.id,
+    uid: sbUser.id,
+    email: sbUser.email || '',
+    displayName: fullName,
+    photoURL: avatarUrl,
+    user_metadata: sbUser.user_metadata,
+  };
+}
 
 export default function App() {
+  const navigate = useNavigate();
+  const location = useLocation();
+
   const [authLoading, setAuthLoading] = useState<boolean>(true);
-  const [user, setUser] = useState<User | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [user, setUser] = useState<HeaderUser | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [chamber, setChamber] = useState<ChamberProfile | null>(null);
   const [officialRole, setOfficialRole] = useState<ChamberRole>('CHAMBER_OWNER');
@@ -57,12 +97,19 @@ export default function App() {
   const currentRole = simulatedRole || officialRole;
   const [isSettingUpPractice, setIsSettingUpPractice] = useState<boolean>(false);
   const [isSubmittingSetup, setIsSubmittingSetup] = useState<boolean>(false);
+  const [matterPersistenceError, setMatterPersistenceError] = useState<string | null>(null);
 
-  // Workspace state seeded with initial legal matters & fixtures
-  const [cases, setCases] = useState<CaseFile[]>(INITIAL_CASES);
-  const [selectedCaseId, setSelectedCaseId] = useState<string>('case-101');
-  const [activeTab, setActiveTab] = useState<string>('dashboard');
-  const [activeAgent, setActiveAgent] = useState<AgentRole>('document_intelligence');
+  // Isolated Demo Sandbox Mode State
+  const [isDemoMode, setIsDemoMode] = useState<boolean>(false);
+
+  // Active Live Chamber Workspace State (Starts empty for real authenticated chambers)
+  const [cases, setCases] = useState<CaseFile[]>([]);
+  const [selectedCaseId, setSelectedCaseId] = useState<string>('');
+  const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
+  const [tasks, setTasks] = useState<PracticeTask[]>([]);
+  const [feeRecords, setFeeRecords] = useState<FeeRecord[]>([]);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(() => {
     try {
       return localStorage.getItem('adv360_sidebar_collapsed') === 'true';
@@ -71,12 +118,8 @@ export default function App() {
     }
   });
 
-  const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>(SAMPLE_CALENDAR);
-  const [tasks, setTasks] = useState<PracticeTask[]>(SAMPLE_TASKS);
-  const [feeRecords, setFeeRecords] = useState<FeeRecord[]>(SAMPLE_FEES);
-
-  // Modals
-  const [isAgentDrawerOpen, setIsAgentDrawerOpen] = useState<boolean>(false);
+  // Modals & Drawers
+  const [isAskAssistantOpen, setIsAskAssistantOpen] = useState<boolean>(false);
   const [isNewCaseModalOpen, setIsNewCaseModalOpen] = useState<boolean>(false);
   const [isSearchOpen, setIsSearchOpen] = useState<boolean>(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState<boolean>(false);
@@ -84,95 +127,337 @@ export default function App() {
   const [isDigitalSigOpen, setIsDigitalSigOpen] = useState<boolean>(false);
   const [isMultilingualOpen, setIsMultilingualOpen] = useState<boolean>(false);
 
-  // 1. Firebase Auth listener
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      setUser(currentUser);
-      if (!currentUser) {
-        // Clear all private chamber data immediately on logout
-        setUserProfile(null);
+  const clearWorkspaceState = useCallback(() => {
+    setUser(null);
+    setUserProfile(null);
+    setChamber(null);
+    setCases([]);
+    setCalendarEvents([]);
+    setTasks([]);
+    setFeeRecords([]);
+    setNotifications([]);
+    setSelectedCaseId('');
+    setIsSettingUpPractice(false);
+  }, []);
+
+  const hydrateUserWorkspace = useCallback(async (sbUser: any) => {
+    const mappedUser = mapSupabaseUser(sbUser);
+    setUser(mappedUser);
+    try {
+      const { chamber: activeChamber, role, profile } = await fetchUserWorkspaceMembership(
+        sbUser.id,
+        sbUser.email || ''
+      );
+
+      if (activeChamber) {
+        setChamber(activeChamber);
+        setOfficialRole(role);
+        setUserProfile(profile);
+        setIsSettingUpPractice(false);
+
+        const [loadedMatters, loadedTasks] = await Promise.all([
+          listMattersForWorkspace(activeChamber.id),
+          listTasksForWorkspace(activeChamber.id).catch(() => [] as PracticeTask[]),
+        ]);
+        setCases(loadedMatters);
+        setTasks(loadedTasks);
+        if (loadedMatters.length === 0) {
+          setSelectedCaseId('');
+        } else {
+          setSelectedCaseId((prev) =>
+            prev && loadedMatters.some((c) => c.id === prev) ? prev : loadedMatters[0].id
+          );
+        }
+      } else {
         setChamber(null);
         setCases([]);
-        setCalendarEvents([]);
-        setTasks([]);
-        setFeeRecords([]);
         setSelectedCaseId('');
-        setIsSettingUpPractice(false);
-        setAuthLoading(false);
-      } else {
-        // Fetch user profile and chamber
-        try {
-          const userDocRef = doc(db, 'users', currentUser.uid);
-          const userSnap = await getDoc(userDocRef);
+        setIsSettingUpPractice(true);
+      }
+    } catch (err: any) {
+      console.error('Error hydrating Supabase workspace profile:', err);
+      setAuthError(err?.message || 'Failed to load workspace membership.');
+    } finally {
+      setAuthLoading(false);
+    }
+  }, []);
 
-          if (userSnap.exists()) {
-            const uData = userSnap.data() as UserProfile;
-            setUserProfile(uData);
-            if (uData.role) {
-              setOfficialRole(uData.role);
-            } else {
-              setOfficialRole('CHAMBER_OWNER');
-            }
+  // 1. Supabase Session Initialization, OAuth Callback Handling & Auth-State Subscription
+  useEffect(() => {
+    let isMounted = true;
 
-            if (uData.chamberId) {
-              const chamberDocRef = doc(db, 'chambers', uData.chamberId);
-              const chamberSnap = await getDoc(chamberDocRef);
-              if (chamberSnap.exists()) {
-                setChamber(chamberSnap.data() as ChamberProfile);
-              }
-            } else {
-              setIsSettingUpPractice(true);
+    const initializeAuth = async () => {
+      try {
+        // Handle OAuth PKCE code callback on /auth/callback
+        if (window.location.pathname === '/auth/callback') {
+          const params = new URLSearchParams(window.location.search);
+          const code = params.get('code');
+          const errorDesc = params.get('error_description') || params.get('error');
+          if (errorDesc) {
+            if (isMounted) {
+              setAuthError(`Google OAuth callback error: ${errorDesc}`);
+              setAuthLoading(false);
             }
-          } else {
-            // First time login - prompt chamber setup
-            setIsSettingUpPractice(true);
+            return;
           }
-        } catch (err) {
-          console.error('Error fetching user chamber profile:', err);
-        } finally {
+          if (code) {
+            const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+            if (error) {
+              if (isMounted) {
+                setAuthError(`Failed to exchange OAuth code: ${error.message}`);
+                setAuthLoading(false);
+              }
+              return;
+            }
+            if (data.session?.user && isMounted) {
+              await hydrateUserWorkspace(data.session.user);
+              navigate('/app/today', { replace: true });
+              return;
+            }
+          }
+        }
+
+        const {
+          data: { session },
+          error,
+        } = await supabase.auth.getSession();
+
+        if (error) {
+          console.warn('Supabase session initialization warning:', error.message);
+        }
+
+        if (!isMounted) return;
+
+        if (session?.user) {
+          await hydrateUserWorkspace(session.user);
+          if (window.location.pathname === '/auth/callback') {
+            navigate('/app/today', { replace: true });
+          }
+        } else {
+          clearWorkspaceState();
+          setAuthLoading(false);
+        }
+      } catch (err: any) {
+        if (isMounted) {
+          console.error('Auth initialization error:', err);
+          clearWorkspaceState();
           setAuthLoading(false);
         }
       }
+    };
+
+    initializeAuth();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (!isMounted) return;
+      if (event === 'SIGNED_OUT' || !session?.user) {
+        clearWorkspaceState();
+        setAuthLoading(false);
+      } else if (
+        event === 'SIGNED_IN' ||
+        event === 'TOKEN_REFRESHED' ||
+        event === 'INITIAL_SESSION'
+      ) {
+        await hydrateUserWorkspace(session.user);
+      }
     });
-    return () => unsubscribe();
-  }, []);
 
-  // 2. Real-time Multi-Tenant Chamber Sync
+    return () => {
+      isMounted = false;
+      subscription.unsubscribe();
+    };
+  }, [clearWorkspaceState, hydrateUserWorkspace, navigate]);
+
+  // 2. Refresh matters and tasks from PostgreSQL when chamber changes and not in demo mode
   useEffect(() => {
-    if (!user || !chamber) return;
+    if (!user || !chamber || isDemoMode) return;
+    let active = true;
 
-    try {
-      const casesCol = collection(db, 'chambers', chamber.id, 'cases');
-      const unsubscribeCases = onSnapshot(casesCol, (snapshot) => {
-        const loadedCases: CaseFile[] = [];
-        snapshot.forEach((d) => {
-          loadedCases.push({ id: d.id, ...d.data() } as CaseFile);
-        });
-        if (loadedCases.length > 0) {
-          setCases(loadedCases);
-          if (!selectedCaseId) {
-            setSelectedCaseId(loadedCases[0].id);
-          }
+    Promise.all([
+      listMattersForWorkspace(chamber.id),
+      listTasksForWorkspace(chamber.id).catch(() => [] as PracticeTask[]),
+    ])
+      .then(([loadedMatters, loadedTasks]) => {
+        if (!active) return;
+        setCases(loadedMatters);
+        setTasks(loadedTasks);
+        if (loadedMatters.length === 0) {
+          setSelectedCaseId('');
+        } else if (!selectedCaseId || !loadedMatters.some((c) => c.id === selectedCaseId)) {
+          setSelectedCaseId(loadedMatters[0].id);
         }
-      }, (err) => {
-        console.error('Firestore cases permission/sync error:', err);
+      })
+      .catch((err) => {
+        console.error('PostgreSQL matters/tasks sync error:', err);
       });
 
-      return () => unsubscribeCases();
-    } catch (err) {
-      console.warn('Chamber sync error:', err);
-    }
-  }, [user, chamber]);
+    return () => {
+      active = false;
+    };
+  }, [user?.id, chamber?.id, isDemoMode]);
 
-  // Auth Action Handlers
+  const handleCreateTask = useCallback(
+    async (newTaskInput: Omit<PracticeTask, 'id'> & { id?: string }) => {
+      if (isDemoMode || !chamber?.id) {
+        const localTask: PracticeTask = {
+          ...newTaskInput,
+          id: newTaskInput.id || `task-${Date.now()}`,
+        };
+        setTasks((prev) => [localTask, ...prev]);
+        return localTask;
+      }
+
+      setMatterPersistenceError(null);
+      try {
+        const savedTask = await createTaskInDb(chamber.id, {
+          ...newTaskInput,
+          caseId: newTaskInput.caseId || selectedCaseId || cases[0]?.id || '',
+        });
+        setTasks((prev) => [savedTask, ...prev]);
+        logAuditEvent('CASE_UPDATE', `Created task in PostgreSQL: ${savedTask.title}`);
+        return savedTask;
+      } catch (err: any) {
+        console.error('PostgreSQL create task error:', err);
+        setMatterPersistenceError(
+          err?.message || 'Failed to create task in PostgreSQL. Unsaved task input preserved.'
+        );
+        throw err;
+      }
+    },
+    [cases, chamber?.id, isDemoMode, selectedCaseId]
+  );
+
+  const handleToggleTask = useCallback(
+    async (taskId: string) => {
+      const target = tasks.find((t) => t.id === taskId);
+      if (!target) return;
+
+      const previousTasks = [...tasks];
+      const nextStatus: PracticeTask['status'] =
+        target.status === 'Completed' ? 'Pending' : 'Completed';
+
+      setMatterPersistenceError(null);
+      setTasks((prev) =>
+        prev.map((t) => (t.id === taskId ? { ...t, status: nextStatus } : t))
+      );
+
+      if (isDemoMode || !chamber?.id) return;
+
+      try {
+        const saved = await updateTaskInDb(chamber.id, taskId, { status: nextStatus });
+        setTasks((prev) => prev.map((t) => (t.id === saved.id ? saved : t)));
+      } catch (err: any) {
+        console.error('PostgreSQL toggle task error:', err);
+        setTasks(previousTasks);
+        setMatterPersistenceError(
+          err?.message ||
+            'Failed to update task status in PostgreSQL. Optimistic task state was rolled back.'
+        );
+        throw err;
+      }
+    },
+    [chamber?.id, isDemoMode, tasks]
+  );
+
+  const handleUpdateTasks = useCallback(
+    async (updatedTasks: PracticeTask[]) => {
+      const previousTasks = [...tasks];
+      setMatterPersistenceError(null);
+      setTasks(updatedTasks);
+
+      if (isDemoMode || !chamber?.id) return;
+
+      for (const updated of updatedTasks) {
+        const existing = previousTasks.find((t) => t.id === updated.id);
+        if (!existing) {
+          try {
+            const saved = await createTaskInDb(chamber.id, updated);
+            setTasks((prev) => prev.map((t) => (t.id === updated.id ? saved : t)));
+          } catch (err: any) {
+            setTasks(previousTasks);
+            setMatterPersistenceError(
+              err?.message || 'Failed to save new task to PostgreSQL. Optimistic state rolled back.'
+            );
+            throw err;
+          }
+        } else if (JSON.stringify(existing) !== JSON.stringify(updated)) {
+          try {
+            const saved = await updateTaskInDb(chamber.id, updated.id, updated);
+            setTasks((prev) => prev.map((t) => (t.id === saved.id ? saved : t)));
+          } catch (err: any) {
+            setTasks(previousTasks);
+            setMatterPersistenceError(
+              err?.message || 'Failed to update task in PostgreSQL. Optimistic state rolled back.'
+            );
+            throw err;
+          }
+        }
+      }
+    },
+    [chamber?.id, isDemoMode, tasks]
+  );
+
+  const handleMarkNotificationAsRead = (notificationId: string) => {
+    setNotifications((prev) =>
+      prev.map((n) => (n.id === notificationId ? { ...n, isRead: true } : n))
+    );
+  };
+
+  const handleMarkAllNotificationsAsRead = () => {
+    setNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })));
+  };
+
+  // Toggle Isolated Demo Sandbox Mode
+  const handleToggleDemoMode = (enabled: boolean) => {
+    setIsDemoMode(enabled);
+    if (enabled) {
+      setCases(INITIAL_CASES);
+      setSelectedCaseId('case-101');
+      setCalendarEvents(SAMPLE_CALENDAR);
+      setTasks(SAMPLE_TASKS);
+      setFeeRecords(SAMPLE_FEES);
+      setNotifications(SAMPLE_NOTIFICATIONS);
+    } else {
+      setCases([]);
+      setSelectedCaseId('');
+      setCalendarEvents([]);
+      setTasks([]);
+      setFeeRecords([]);
+      setNotifications([]);
+      if (chamber?.id) {
+        Promise.all([
+          listMattersForWorkspace(chamber.id),
+          listTasksForWorkspace(chamber.id).catch(() => [] as PracticeTask[]),
+        ])
+          .then(([loadedMatters, loadedTasks]) => {
+            setCases(loadedMatters);
+            setTasks(loadedTasks);
+            setSelectedCaseId(loadedMatters[0]?.id || '');
+          })
+          .catch(() => {});
+      }
+    }
+  };
+
+  // Auth Action Handlers (Supabase Google OAuth)
   const handleGoogleSignIn = async () => {
+    setAuthError(null);
+    if (!isSupabaseConfigured) {
+      setAuthError(
+        'Supabase Auth is not configured in this environment. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to enable live Google Sign-In.'
+      );
+      return;
+    }
+
     setAuthLoading(true);
     try {
-      await signInWithPopup(auth, googleProvider);
-      logAuditEvent('ROLE_CHANGE', 'User authenticated via Google Auth');
+      await signInWithGoogle();
+      logAuditEvent('ROLE_CHANGE', 'User initiated Google OAuth via Supabase Auth');
     } catch (err: any) {
       console.error('Google Sign-In Error:', err);
-    } finally {
+      setAuthError(err?.message || 'Google Sign-In failed.');
       setAuthLoading(false);
     }
   };
@@ -180,22 +465,15 @@ export default function App() {
   const handleLogout = async () => {
     try {
       logAuditEvent('ROLE_CHANGE', 'User logged out from Chamber Workspace');
-      await signOut(auth);
-      setUser(null);
-      setUserProfile(null);
-      setChamber(null);
-      setCases([]);
-      setCalendarEvents([]);
-      setTasks([]);
-      setFeeRecords([]);
-      setSelectedCaseId('');
-      setActiveTab('dashboard');
+      await supabaseSignOut();
+      clearWorkspaceState();
+      navigate('/');
     } catch (err) {
       console.error('Logout error:', err);
     }
   };
 
-  // First Time Practice Setup Handler
+  // Practice Setup Handler -> Atomic Supabase RPC `create_workspace_with_owner`
   const handlePracticeSetup = async (setupData: {
     advocateName: string;
     chamberName: string;
@@ -205,86 +483,148 @@ export default function App() {
     phone: string;
     practiceAreas: string[];
   }) => {
-    if (!user) return;
+    if (!user?.id) return;
     setIsSubmittingSetup(true);
+    setAuthError(null);
 
     try {
-      const chamberId = `chamber-${Date.now()}`;
-      const nowIso = new Date().toISOString();
-
-      const newChamber: ChamberProfile = {
-        id: chamberId,
-        name: setupData.chamberName,
-        ownerUid: user.uid,
-        advocateName: setupData.advocateName,
-        enrollmentNo: setupData.enrollmentNo,
-        stateBarCouncil: setupData.stateBarCouncil,
-        officeLocation: setupData.officeLocation,
-        phone: setupData.phone,
-        email: user.email || '',
-        practiceAreas: setupData.practiceAreas,
-        createdAt: nowIso
-      };
+      const { chamber: createdChamber, role } = await createWorkspaceWithOwner(
+        {
+          ...setupData,
+          email: user.email || '',
+        },
+        user.id
+      );
 
       const newProfile: UserProfile = {
-        uid: user.uid,
+        uid: user.id,
         displayName: setupData.advocateName,
         email: user.email || '',
         photoURL: user.photoURL || undefined,
-        chamberId: chamberId,
-        role: 'CHAMBER_OWNER',
-        createdAt: nowIso
+        chamberId: createdChamber.id,
+        role,
+        createdAt: createdChamber.createdAt,
       };
 
-      // 1. Create chamber document
-      await setDoc(doc(db, 'chambers', chamberId), cleanFirestoreData(newChamber));
-
-      // 2. Add member record in chamber
-      await setDoc(doc(db, 'chambers', chamberId, 'members', user.uid), {
-        uid: user.uid,
-        role: 'CHAMBER_OWNER',
-        joinedAt: nowIso
-      });
-
-      // 3. Create user profile document
-      await setDoc(doc(db, 'users', user.uid), cleanFirestoreData(newProfile));
-
-      setChamber(newChamber);
+      setChamber(createdChamber);
+      setOfficialRole(role);
       setUserProfile(newProfile);
+      setCases([]);
+      setSelectedCaseId('');
       setIsSettingUpPractice(false);
       logAuditEvent('CASE_CREATE', `Created Chamber Workspace: ${setupData.chamberName}`);
+      navigate('/app/today');
     } catch (err: any) {
       console.error('Practice setup failed:', err);
+      setAuthError(err?.message || 'Failed to create workspace.');
       throw err;
     } finally {
       setIsSubmittingSetup(false);
     }
   };
 
-  // Case Actions inside Chamber
+  // Add Matter Action -> PostgreSQL `public.matters` with visible error handling & optimistic rollback
   const handleAddNewCase = async (newCase: CaseFile) => {
-    if (!chamber) return;
-
-    if (!hasPermission(currentRole, 'CREATE_CASE')) {
-      alert(`Role "${currentRole}" is not authorized to create cases.`);
+    if (isDemoMode) {
       return;
     }
 
-    setCases((prev) => [newCase, ...prev]);
-    setSelectedCaseId(newCase.id);
-    logAuditEvent('CASE_CREATE', `Opened new case file: ${newCase.title}`);
+    if (!chamber) {
+      const err = new Error('Cannot save matter: No active chamber workspace.');
+      setMatterPersistenceError(err.message);
+      throw err;
+    }
+
+    if (!hasPermission(currentRole, 'CREATE_CASE')) {
+      const err = new Error('Permission denied: Your role cannot create new matters.');
+      setMatterPersistenceError(err.message);
+      throw err;
+    }
+
+    const previousCases = [...cases];
+    const previousSelectedId = selectedCaseId;
+    setMatterPersistenceError(null);
 
     try {
-      const sanitizedCase = cleanFirestoreData(newCase);
-      await setDoc(doc(db, 'chambers', chamber.id, 'cases', newCase.id), sanitizedCase);
-    } catch (err) {
-      console.error('Firestore save case error:', err);
+      const savedMatter = await createMatterInDb(chamber.id, {
+        ...newCase,
+        chamberId: chamber.id,
+      });
+
+      setCases((prev) => [savedMatter, ...prev]);
+      setSelectedCaseId(savedMatter.id);
+      logAuditEvent('CASE_CREATE', `Opened new case file: ${savedMatter.title}`);
+      navigate(`/app/matters/${savedMatter.id}/overview`);
+    } catch (err: any) {
+      console.error('PostgreSQL save matter error:', err);
+      // Roll back any optimistic state and surface visible error while preserving modal input
+      setCases(previousCases);
+      setSelectedCaseId(previousSelectedId);
+      setMatterPersistenceError(
+        err?.message || 'Failed to save matter to PostgreSQL. Unsaved input has been preserved.'
+      );
+      throw err;
     }
   };
 
+  // Persist Single Matter Update -> PostgreSQL `public.matters` with optimistic rollback on failure
+  const handleUpdateSingleMatter = useCallback(
+    async (updatedMatter: CaseFile) => {
+      const previousCases = [...cases];
+      setMatterPersistenceError(null);
+      setCases((prev) => prev.map((c) => (c.id === updatedMatter.id ? updatedMatter : c)));
+
+      if (isDemoMode || !chamber?.id) return;
+
+      try {
+        const savedMatter = await updateMatterInDb(chamber.id, updatedMatter.id, updatedMatter);
+        setCases((prev) => prev.map((c) => (c.id === savedMatter.id ? savedMatter : c)));
+      } catch (err: any) {
+        console.error('PostgreSQL update matter error:', err);
+        setCases(previousCases);
+        setMatterPersistenceError(
+          err?.message ||
+            'Failed to update matter in PostgreSQL. Optimistic changes were rolled back and unsaved input preserved.'
+        );
+        throw err;
+      }
+    },
+    [cases, chamber?.id, isDemoMode]
+  );
+
+  // Persist Matter Updates -> PostgreSQL `public.matters` with optimistic rollback on failure
+  const handleUpdateCases = useCallback(
+    async (updatedCases: CaseFile[]) => {
+      const previousCases = [...cases];
+      setMatterPersistenceError(null);
+      setCases(updatedCases);
+      if (isDemoMode || !chamber?.id) return;
+
+      for (const updated of updatedCases) {
+        const existing = previousCases.find((c) => c.id === updated.id);
+        if (existing && JSON.stringify(existing) !== JSON.stringify(updated)) {
+          try {
+            const saved = await updateMatterInDb(chamber.id, updated.id, updated);
+            setCases((prev) => prev.map((c) => (c.id === saved.id ? saved : c)));
+          } catch (err: any) {
+            console.error('PostgreSQL update matter error:', err);
+            setCases(previousCases);
+            setMatterPersistenceError(
+              err?.message ||
+                'Failed to save matter updates to PostgreSQL. Optimistic state was rolled back.'
+            );
+            throw err;
+          }
+        }
+      }
+    },
+    [cases, chamber?.id, isDemoMode]
+  );
+
   const handleAddCaseFromIntake = (intake: IntakeData) => {
-    const hearingDateObj = intake.importantDates?.find((d) => 
-      d.label.toLowerCase().includes('hearing') || d.label.toLowerCase().includes('court')
+    const hearingDateObj = intake.importantDates?.find(
+      (d) =>
+        d.label.toLowerCase().includes('hearing') || d.label.toLowerCase().includes('court')
     );
 
     const newCase: CaseFile = {
@@ -293,42 +633,21 @@ export default function App() {
       caseType: (intake.caseType as any) || 'Property Dispute',
       status: 'Intake',
       clientName: intake.parties.client,
+      oppositeParty: intake.parties.oppositeParty,
       courtName: 'Court Not Specified',
       summary: intake.suggestedAction || 'Extracted via AI Client Intake.',
       createdAt: new Date().toISOString().split('T')[0],
-      updatedAt: new Date().toISOString().split('T')[0]
+      updatedAt: new Date().toISOString().split('T')[0],
     };
 
-    if (intake.parties.oppositeParty) {
-      newCase.oppositeParty = intake.parties.oppositeParty;
-    }
     if (hearingDateObj?.date) {
       newCase.nextHearingDate = hearingDateObj.date;
     }
 
     handleAddNewCase(newCase);
-    setActiveTab('dashboard');
   };
 
-  const handleSimulatedRoleSwitch = (newRole: ChamberRole | null) => {
-    setSimulatedRole(newRole);
-    if (newRole) {
-      logAuditEvent('ROLE_CHANGE', `Activated UI Permission Simulator for role: ${newRole}`);
-    } else {
-      logAuditEvent('ROLE_CHANGE', `Deactivated UI Permission Simulator, reverted to official role: ${officialRole}`);
-    }
-  };
-
-  const selectedCase = cases.find((c) => c.id === selectedCaseId) || cases[0] || {
-    id: 'placeholder',
-    title: 'Mylapore Ancestral Property Dispute',
-    caseType: 'Property Dispute',
-    status: 'Active Litigation',
-    clientName: 'S. Ramesh',
-    createdAt: new Date().toISOString()
-  };
-
-  // ROOT VIEW ROUTING
+  const selectedCase = cases.find((c) => c.id === selectedCaseId) || null;
 
   // 1. Splash Loading State
   if (authLoading) {
@@ -340,24 +659,66 @@ export default function App() {
           </div>
           <div className="space-y-1">
             <h2 className="font-serif italic font-bold text-xl text-[#1A1A1A]">Advocate360 AI</h2>
-            <p className="text-xs text-[#555555]">Initializing Chamber Security & Authentication...</p>
+            <p className="text-xs text-[#555555]">
+              Initializing Supabase Session & Workspace Security...
+            </p>
           </div>
         </div>
       </div>
     );
   }
 
-  // 2. UNAUTHENTICATED USER -> PUBLIC LANDING PAGE ONLY
+  // 2. Unauthenticated User -> Public Landing Page & OAuth Callback Route (Protected Routes Redirect to /)
   if (!user) {
     return (
-      <LandingPage
-        onGoogleSignIn={handleGoogleSignIn}
-        isLoadingAuth={authLoading}
-      />
+      <div>
+        {authError && (
+          <div className="bg-amber-900 text-amber-100 text-xs px-4 py-2.5 border-b-2 border-amber-500 flex items-center justify-between">
+            <span>{authError}</span>
+            <button
+              onClick={() => setAuthError(null)}
+              className="px-2 py-0.5 bg-black text-amber-400 font-mono text-[10px] uppercase"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+        <Routes>
+          <Route
+            path="/"
+            element={
+              <LandingPage onGoogleSignIn={handleGoogleSignIn} isLoadingAuth={authLoading} />
+            }
+          />
+          <Route
+            path="/auth/callback"
+            element={
+              <div className="min-h-screen bg-[#FDFCFB] flex flex-col items-center justify-center p-4">
+                <div className="p-8 bg-[#F5F2EF] border-2 border-[#1A1A1A] max-w-md w-full text-center space-y-4">
+                  <AlertTriangle className="w-8 h-8 text-[#B45309] mx-auto" />
+                  <h2 className="font-serif italic font-bold text-lg">
+                    {authError ? 'Authentication Callback Failed' : 'Completing Google Sign-In...'}
+                  </h2>
+                  <p className="text-xs text-[#555555]">
+                    {authError || 'Verifying OAuth session with Supabase Auth...'}
+                  </p>
+                  <button
+                    onClick={() => navigate('/', { replace: true })}
+                    className="px-4 py-2 bg-[#1A1A1A] text-amber-400 text-xs font-bold uppercase"
+                  >
+                    Return to Sign In
+                  </button>
+                </div>
+              </div>
+            }
+          />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </div>
     );
   }
 
-  // 3. AUTHENTICATED USER WITHOUT CHAMBER -> PRACTICE SETUP MODAL
+  // 3. Authenticated User Without Chamber -> Practice Setup (calls create_workspace_with_owner)
   if (isSettingUpPractice) {
     return (
       <div className="min-h-screen bg-[#FDFCFB]">
@@ -371,220 +732,340 @@ export default function App() {
     );
   }
 
-  // 4. AUTHENTICATED ADVOCATE WORKSPACE
+  // 4. Authenticated Advocate Workspace with Protected URL Router
   return (
     <div className="min-h-screen bg-[#FDFCFB] text-[#1A1A1A] flex flex-col font-sans selection:bg-[#B45309] selection:text-white">
-      
-      {/* Brand & Chamber Header */}
+      {/* Top Bar Navigation */}
       <Header
         user={user}
         chamber={chamber}
         currentRole={currentRole}
-        simulatedRole={simulatedRole}
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
-        activeAgent={activeAgent}
-        setActiveAgent={setActiveAgent}
         cases={cases}
         selectedCaseId={selectedCaseId}
-        setSelectedCaseId={setSelectedCaseId}
         onOpenNewCaseModal={() => setIsNewCaseModalOpen(true)}
-        toggleAgentChatDrawer={() => setIsAgentDrawerOpen(!isAgentDrawerOpen)}
         onOpenSearch={() => setIsSearchOpen(true)}
         onOpenNotifications={() => setIsNotificationsOpen(true)}
-        onOpenRoleManager={() => setIsRoleManagerOpen(true)}
-        onOpenMultilingual={() => setIsMultilingualOpen(true)}
         onLogout={handleLogout}
+        onToggleAskAssistant={() => setIsAskAssistantOpen(!isAskAssistantOpen)}
+        unreadNotificationsCount={notifications.filter((n) => !n.isRead).length}
+        isDemoMode={isDemoMode}
+        onToggleDemoMode={handleToggleDemoMode}
       />
 
-      {/* Simulator Banner (Active when testing UI permissions) */}
-      {simulatedRole && (
-        <div className="bg-purple-950 text-purple-100 text-xs px-4 py-2 border-b-2 border-purple-500 flex flex-col sm:flex-row items-center justify-between gap-2 shadow-md">
+      {/* Isolated Demo Sandbox Banner */}
+      {isDemoMode && (
+        <div className="bg-amber-900 text-amber-100 text-xs px-4 py-2 border-b-2 border-amber-500 flex items-center justify-between shadow-xs">
           <div className="flex items-center gap-2 font-mono">
-            <span className="bg-purple-500 text-white font-bold px-2 py-0.5 text-[9px] uppercase tracking-wider animate-pulse">
-              SIMULATOR ACTIVE
+            <span className="bg-amber-400 text-black font-bold px-2 py-0.5 text-[9px] uppercase tracking-wider">
+              ISOLATED DEMO SANDBOX
             </span>
             <span>
-              Previewing UI permissions as: <strong className="text-purple-300 uppercase">{simulatedRole}</strong> (Official Bound Role: <strong>{officialRole}</strong>)
+              Sample data preview active. Live chamber writes and protected production APIs are
+              disabled.
             </span>
           </div>
           <button
-            onClick={() => handleSimulatedRoleSwitch(null)}
-            className="bg-white text-purple-950 font-bold px-3 py-1 text-[10px] uppercase hover:bg-purple-100 transition-colors shadow-xs"
+            onClick={() => handleToggleDemoMode(false)}
+            className="bg-white text-black font-bold px-3 py-1 text-[10px] uppercase hover:bg-amber-100 transition-colors cursor-pointer"
           >
-            Exit Simulation Mode
+            Exit Demo Mode
           </button>
         </div>
       )}
 
-      {/* Enterprise Left Sidebar + Main Workspace Workspace Container */}
+      {/* Visible Matter Persistence Error Banner */}
+      {matterPersistenceError && (
+        <div
+          role="alert"
+          className="bg-rose-900 text-rose-100 text-xs px-4 py-2.5 border-b-2 border-rose-500 flex items-center justify-between shadow-xs"
+        >
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-300 shrink-0" />
+            <span>{matterPersistenceError}</span>
+          </div>
+          <button
+            onClick={() => setMatterPersistenceError(null)}
+            className="bg-black text-amber-400 font-mono font-bold px-2.5 py-0.5 text-[10px] uppercase cursor-pointer"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {/* Main Workspace Layout */}
       <div className="flex flex-1 min-h-0 relative overflow-hidden">
-        
-        {/* Enterprise Left Sidebar */}
+        {/* Left Sidebar Main Navigation */}
         <SidebarNav
-          activeTab={activeTab}
-          setActiveTab={setActiveTab}
           isCollapsed={isSidebarCollapsed}
           setIsCollapsed={(val) => {
             setIsSidebarCollapsed(val);
             localStorage.setItem('adv360_sidebar_collapsed', String(val));
           }}
-          cases={cases}
-          selectedCaseId={selectedCaseId}
-          setSelectedCaseId={setSelectedCaseId}
-          onOpenNewCaseModal={() => setIsNewCaseModalOpen(true)}
           currentRole={currentRole}
+          isDemoMode={isDemoMode}
         />
 
-        {/* Right Workspace Area */}
+        {/* Right Workspace View Area */}
         <div className="flex-1 flex flex-col min-w-0 overflow-y-auto bg-[#FDFCFB]">
-          
-          {/* Matter-Centric Context Navigation Bar */}
-          {selectedCase && (
-            <MatterWorkspaceBar
-              selectedCase={selectedCase as CaseFile}
-              activeTab={activeTab}
-              onNavigateTab={setActiveTab}
-            />
-          )}
-
-          {/* Primary Workspace Body */}
-          <main className="flex-1 max-w-[1600px] w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
-            {activeTab === 'dashboard' && (
-              <PracticeDashboard
-                cases={cases}
-                selectedCaseId={selectedCaseId}
-                setSelectedCaseId={setSelectedCaseId}
-                calendarEvents={calendarEvents}
-                tasks={tasks}
-                feeRecords={feeRecords}
-                onNavigateTab={setActiveTab}
-                onOpenNewCaseModal={() => setIsNewCaseModalOpen(true)}
+          <div className="flex-1 max-w-[1700px] w-full mx-auto p-4 sm:p-6">
+            <Routes>
+              {/* Main Navigation Sub-Routes */}
+              <Route
+                path="/app/today"
+                element={
+                  <PracticeDashboard
+                    cases={cases}
+                    chamberId={chamber?.id}
+                    selectedCaseId={selectedCaseId}
+                    setSelectedCaseId={setSelectedCaseId}
+                    calendarEvents={calendarEvents}
+                    tasks={tasks}
+                    feeRecords={feeRecords}
+                    notifications={notifications}
+                    onNavigateTab={(tab) => navigate(`/app/${tab}`)}
+                    onOpenNewCaseModal={() => setIsNewCaseModalOpen(true)}
+                    onToggleTask={handleToggleTask}
+                    onCreateTask={handleCreateTask}
+                    onMarkNotificationAsRead={handleMarkNotificationAsRead}
+                    onMarkAllNotificationsAsRead={handleMarkAllNotificationsAsRead}
+                    onUpdateCases={handleUpdateCases}
+                    onUpdateTasks={handleUpdateTasks}
+                    initialTaskViewMode="list"
+                  />
+                }
               />
-            )}
 
-            {activeTab === 'billing' && (
-              <BillingModule
-                cases={cases}
-                chamber={chamber}
-                selectedCaseId={selectedCaseId}
-                setSelectedCaseId={setSelectedCaseId}
-                onNavigateTab={setActiveTab}
-                currentRole={currentRole}
+              <Route
+                path="/app/matters"
+                element={
+                  <PracticeDashboard
+                    cases={cases}
+                    chamberId={chamber?.id}
+                    selectedCaseId={selectedCaseId}
+                    setSelectedCaseId={setSelectedCaseId}
+                    calendarEvents={calendarEvents}
+                    tasks={tasks}
+                    feeRecords={feeRecords}
+                    notifications={notifications}
+                    onNavigateTab={(tab) => navigate(`/app/${tab}`)}
+                    onOpenNewCaseModal={() => setIsNewCaseModalOpen(true)}
+                    onToggleTask={handleToggleTask}
+                    onCreateTask={handleCreateTask}
+                    onMarkNotificationAsRead={handleMarkNotificationAsRead}
+                    onMarkAllNotificationsAsRead={handleMarkAllNotificationsAsRead}
+                    onUpdateCases={handleUpdateCases}
+                    onUpdateTasks={handleUpdateTasks}
+                    initialTaskViewMode="list"
+                    onAddCaseFromIntake={handleAddCaseFromIntake}
+                  />
+                }
               />
-            )}
 
-            {activeTab === 'intelligence' && (
-              <LegalIntelligenceWorkspace />
-            )}
-
-            {activeTab === 'graph' && (
-              <KnowledgeGraph selectedCase={selectedCase as CaseFile} onNavigateTab={setActiveTab} />
-            )}
-
-            {activeTab === 'orchestrator' && (
-              <AgentOrchestrator selectedCase={selectedCase as CaseFile} onNavigateTab={setActiveTab} />
-            )}
-
-            {activeTab === 'intake' && (
-              <ClientIntake onAddCaseFromIntake={handleAddCaseFromIntake} />
-            )}
-
-            {activeTab === 'analyzer' && <DocumentAnalyzer />}
-
-            {activeTab === 'evidence' && <EvidenceIntelligence />}
-
-            {activeTab === 'timeline' && <TimelineAndContradictions />}
-
-            {activeTab === 'research' && <LegalResearch />}
-
-            {activeTab === 'drafting' && <DraftingAssistant />}
-
-            {activeTab === 'risk' && <RiskAndLimitation />}
-
-            {activeTab === 'hearing' && <HearingBrief />}
-
-            {activeTab === 'conflict' && <ConflictChecker cases={cases} />}
-
-            {activeTab === 'audit' && (
-              <AuditLogViewer chamberId={chamber?.id} userEmail={user?.email || ''} />
-            )}
-
-            {activeTab === 'analytics' && (
-              <ExecutiveAnalytics cases={cases} feeRecords={feeRecords} />
-            )}
-
-            {activeTab === 'plugins' && <PluginManager />}
-
-            {activeTab === 'ops' && <OpsHealthDashboard />}
-
-            {activeTab === 'repository' && (
-              <DocumentRepository 
-                selectedCase={selectedCase as CaseFile} 
-                onOpenDigitalSignature={() => setIsDigitalSigOpen(true)}
+              <Route
+                path="/app/clients"
+                element={
+                  <ClientPortal
+                    cases={cases}
+                    selectedCaseId={selectedCaseId}
+                    setSelectedCaseId={setSelectedCaseId}
+                    chamber={chamber}
+                  />
+                }
               />
-            )}
 
-            {activeTab === 'client' && (
-              <ClientPortal 
-                cases={cases}
-                selectedCaseId={selectedCaseId}
-                setSelectedCaseId={setSelectedCaseId}
-                chamber={chamber}
+              <Route
+                path="/app/work"
+                element={
+                  <PracticeDashboard
+                    cases={cases}
+                    chamberId={chamber?.id}
+                    selectedCaseId={selectedCaseId}
+                    setSelectedCaseId={setSelectedCaseId}
+                    calendarEvents={calendarEvents}
+                    tasks={tasks}
+                    feeRecords={feeRecords}
+                    notifications={notifications}
+                    onNavigateTab={(tab) => navigate(`/app/${tab}`)}
+                    onOpenNewCaseModal={() => setIsNewCaseModalOpen(true)}
+                    onToggleTask={handleToggleTask}
+                    onCreateTask={handleCreateTask}
+                    onMarkNotificationAsRead={handleMarkNotificationAsRead}
+                    onMarkAllNotificationsAsRead={handleMarkAllNotificationsAsRead}
+                    onUpdateCases={handleUpdateCases}
+                    onUpdateTasks={handleUpdateTasks}
+                    initialTaskViewMode="dag"
+                  />
+                }
               />
-            )}
 
-            {activeTab === 'comparison' && <DocumentComparison />}
+              <Route
+                path="/app/documents"
+                element={
+                  <DocumentRepository
+                    selectedCase={selectedCase as any}
+                    chamberId={chamber?.id}
+                    onOpenDigitalSignature={() => setIsDigitalSigOpen(true)}
+                  />
+                }
+              />
 
-            {activeTab === 'memory' && (
-              <AiMemoryInspector selectedCase={selectedCase as CaseFile} />
-            )}
+              <Route
+                path="/app/billing"
+                element={
+                  <BillingModule
+                    cases={cases}
+                    chamber={chamber}
+                    selectedCaseId={selectedCaseId}
+                    setSelectedCaseId={setSelectedCaseId}
+                    onNavigateTab={(tab) => navigate(`/app/${tab}`)}
+                    currentRole={currentRole}
+                  />
+                }
+              />
 
-            {activeTab === 'workflow' && (
-              <WorkflowAutomation selectedCase={selectedCase as CaseFile} onNavigateTab={setActiveTab} />
-            )}
-          </main>
+              <Route
+                path="/app/reports"
+                element={
+                  <div className="space-y-6">
+                    <ExecutiveAnalytics cases={cases} feeRecords={feeRecords} />
+                    <LegalIntelligenceWorkspace />
+                  </div>
+                }
+              />
 
-          {/* Editorial Gazette Footer */}
-          <footer className="bg-[#1A1A1A] border-t-2 border-[#1A1A1A] py-6 text-center text-xs text-slate-300 mt-auto">
-            <div className="max-w-[1600px] mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <span className="font-serif italic font-bold text-white text-base">Advocate360 AI</span>
-                <span className="text-[9px] uppercase tracking-widest font-bold bg-[#B45309] text-white px-2 py-0.5">
-                  UNIKORN360
-                </span>
-              </div>
-              <p className="text-xs text-slate-400 font-serif italic">
-                "Your AI Junior Advocate, available 24×7 — Confidential & Isolated Chamber Workspace."
-              </p>
-              <span className="text-[10px] uppercase font-bold tracking-widest text-slate-400">
-                © {new Date().getFullYear()} Advocate360 AI LegalOS
+              {/* Settings Sub-Routes */}
+              <Route
+                path="/app/settings/*"
+                element={
+                  <SettingsView
+                    chamber={chamber}
+                    currentRole={currentRole}
+                    userEmail={user.email || ''}
+                    onOpenRoleManager={() => setIsRoleManagerOpen(true)}
+                  />
+                }
+              />
+
+              {/* Matter Workspace Sub-Routes */}
+              <Route
+                path="/app/matters/:matterId/*"
+                element={
+                  <MatterWorkspaceRoute
+                    cases={cases}
+                    chamber={chamber}
+                    calendarEvents={calendarEvents}
+                    tasks={tasks}
+                    feeRecords={feeRecords}
+                    notifications={notifications}
+                    userEmail={user.email || ''}
+                    onOpenDigitalSignature={() => setIsDigitalSigOpen(true)}
+                    onToggleTask={handleToggleTask}
+                    onCreateTask={handleCreateTask}
+                    onUpdateTasks={handleUpdateTasks}
+                    onUpdateCases={handleUpdateCases}
+                    onUpdateMatter={handleUpdateSingleMatter}
+                  />
+                }
+              />
+
+              {/* Root & OAuth Callback Redirects */}
+              <Route path="/" element={<Navigate to="/app/today" replace />} />
+              <Route path="/auth/callback" element={<Navigate to="/app/today" replace />} />
+              <Route path="/app" element={<Navigate to="/app/today" replace />} />
+              <Route path="/dashboard" element={<Navigate to="/app/today" replace />} />
+              <Route path="/workflow_dag" element={<Navigate to="/app/work" replace />} />
+              <Route path="/intelligence" element={<Navigate to="/app/reports" replace />} />
+              <Route path="/intake" element={<Navigate to="/app/matters" replace />} />
+              <Route path="/analyzer" element={<Navigate to="/app/documents" replace />} />
+              <Route path="/repository" element={<Navigate to="/app/documents" replace />} />
+              <Route
+                path="/evidence"
+                element={
+                  <Navigate
+                    to={selectedCaseId ? `/app/matters/${selectedCaseId}/analysis` : '/app/matters'}
+                    replace
+                  />
+                }
+              />
+              <Route
+                path="/drafting"
+                element={
+                  <Navigate
+                    to={
+                      selectedCaseId
+                        ? `/app/matters/${selectedCaseId}/research-drafts`
+                        : '/app/matters'
+                    }
+                    replace
+                  />
+                }
+              />
+              <Route
+                path="/hearing"
+                element={
+                  <Navigate
+                    to={selectedCaseId ? `/app/matters/${selectedCaseId}/work` : '/app/work'}
+                    replace
+                  />
+                }
+              />
+              <Route path="/audit" element={<Navigate to="/app/settings/audit" replace />} />
+              <Route path="/ops" element={<Navigate to="/app/settings/diagnostics" replace />} />
+
+              {/* 404 Route */}
+              <Route
+                path="*"
+                element={
+                  <div className="p-8 bg-[#FDFCFB] border-2 border-[#1A1A1A] max-w-md mx-auto my-12 text-center space-y-4">
+                    <AlertTriangle className="w-10 h-10 text-[#B45309] mx-auto" />
+                    <h2 className="font-serif italic font-bold text-xl">Page Not Found</h2>
+                    <p className="text-xs text-slate-600">The requested route does not exist.</p>
+                    <button
+                      onClick={() => navigate('/app/today')}
+                      className="px-4 py-2 bg-[#1A1A1A] text-amber-400 font-bold uppercase text-xs border border-[#1A1A1A]"
+                    >
+                      Return to Today Overview
+                    </button>
+                  </div>
+                }
+              />
+            </Routes>
+          </div>
+
+          {/* Footer */}
+          <footer className="bg-[#1A1A1A] border-t border-slate-800 py-4 text-center text-xs text-slate-400 mt-auto">
+            <div className="max-w-[1700px] mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
+              <span className="font-serif italic text-white font-bold">Advocate360 AI LegalOS</span>
+              <span className="text-[10px] uppercase font-mono">
+                Confidential & Isolated Chamber Workspace
               </span>
+              <span className="text-[10px]">© {new Date().getFullYear()} Advocate360</span>
             </div>
           </footer>
-
         </div>
       </div>
 
-      {/* Quick Notes Floating Action Button & Voice Drawer */}
+      {/* Floating Utilities */}
       <QuickNotesDrawer
         cases={cases}
         selectedCaseId={selectedCaseId}
         onAssignToCase={(caseId, content, noteTitle) => {
-          setCases(prev => prev.map(c => {
+          const nextCases = cases.map((c) => {
             if (c.id === caseId) {
-              const prevNotes = c.summary ? `${c.summary}\n\n[Quick Note: ${noteTitle}]\n${content}` : content;
+              const prevNotes = c.summary
+                ? `${c.summary}\n\n[Quick Note: ${noteTitle}]\n${content}`
+                : content;
               return { ...c, summary: prevNotes };
             }
             return c;
-          }));
+          });
+          handleUpdateCases(nextCases);
         }}
         onConvertToTask={(newTask) => {
-          setTasks(prev => [newTask, ...prev]);
+          handleCreateTask(newTask).catch(() => {});
         }}
       />
 
-      {/* Global Search Modal (Cmd+K) */}
       <GlobalSearchModal
         isOpen={isSearchOpen}
         onClose={() => setIsSearchOpen(false)}
@@ -592,65 +1073,60 @@ export default function App() {
         onSelectCase={(id) => {
           setSelectedCaseId(id);
           setIsSearchOpen(false);
+          navigate(`/app/matters/${id}/overview`);
         }}
         onNavigateTab={(tab) => {
-          setActiveTab(tab);
           setIsSearchOpen(false);
+          navigate(`/app/${tab}`);
         }}
       />
 
-      {/* Notification Center */}
       <NotificationCenter
         isOpen={isNotificationsOpen}
         onClose={() => setIsNotificationsOpen(false)}
         onNavigateTab={(tab) => {
-          setActiveTab(tab);
           setIsNotificationsOpen(false);
+          navigate(`/app/${tab}`);
         }}
+        notifications={notifications}
+        onMarkAllRead={handleMarkAllNotificationsAsRead}
+        onMarkRead={handleMarkNotificationAsRead}
       />
 
-      {/* Role & Permission Simulator Modal */}
       <RoleManagerModal
         isOpen={isRoleManagerOpen}
         onClose={() => setIsRoleManagerOpen(false)}
         officialRole={officialRole}
         simulatedRole={simulatedRole}
-        onSelectSimulatedRole={handleSimulatedRoleSwitch}
+        onSelectSimulatedRole={(role) => setSimulatedRole(role)}
         chamberId={chamber?.id}
         userEmail={user?.email || ''}
       />
 
-      {/* New Case Creation Modal */}
       <NewCaseModal
         isOpen={isNewCaseModalOpen}
         onClose={() => setIsNewCaseModalOpen(false)}
-        onAddCase={(newCase) => {
-          handleAddNewCase(newCase);
-          setIsNewCaseModalOpen(false);
-        }}
+        onAddCase={handleAddNewCase}
       />
 
-      {/* Agent Chat Drawer */}
-      <AgentChatDrawer
-        isOpen={isAgentDrawerOpen}
-        onClose={() => setIsAgentDrawerOpen(false)}
-        activeAgent={activeAgent}
-        setActiveAgent={setActiveAgent}
-        selectedCase={selectedCase as CaseFile}
-      />
-
-      {/* Digital Signature Drawer */}
       <DigitalSignatureDrawer
         isOpen={isDigitalSigOpen}
         onClose={() => setIsDigitalSigOpen(false)}
+        isDemoMode={isDemoMode}
       />
 
-      {/* Multilingual OS Engine Modal */}
       <MultilingualModal
         isOpen={isMultilingualOpen}
         onClose={() => setIsMultilingualOpen(false)}
       />
 
+      {/* Contextual Ask Advocate360 AI Assistant Drawer */}
+      <AskAdvocateAssistant
+        isOpen={isAskAssistantOpen}
+        onClose={() => setIsAskAssistantOpen(false)}
+        selectedCase={selectedCase}
+        chamberId={chamber?.id}
+      />
     </div>
   );
 }

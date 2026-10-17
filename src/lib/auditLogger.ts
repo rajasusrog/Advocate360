@@ -45,17 +45,29 @@ export function subscribeAuditLogs(callback: AuditSubscriber): () => void {
 }
 
 export function logAuditEvent(
-  action: AuditLog['action'] | 'DOCUMENT_VIEW' | 'EXPORT_PDF' | 'PREPARATION_SIGN' | 'BACKUP_CREATE' | 'RESTORE_VERSION' | 'CONFLICT_SEARCH',
+  action: AuditLog['action'],
   details: string,
-  actorEmail: string = 'advocate@chamber.legal',
+  metaOrActorEmail?: string | { chamberId?: string; caseId?: string; docId?: string; actorEmail?: string; actorUid?: string },
   actorUid: string = 'usr-current'
 ): AuditLog {
+  let chamberId = 'chamber-default';
+  let email = 'advocate@chamber.legal';
+  let uid = actorUid;
+
+  if (typeof metaOrActorEmail === 'string') {
+    email = metaOrActorEmail;
+  } else if (metaOrActorEmail && typeof metaOrActorEmail === 'object') {
+    chamberId = metaOrActorEmail.chamberId || chamberId;
+    email = metaOrActorEmail.actorEmail || email;
+    uid = metaOrActorEmail.actorUid || uid;
+  }
+
   const newLog: AuditLog = {
     id: `log-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-    chamberId: 'chamber-default',
-    actorUid,
-    actorEmail,
-    action: action as any,
+    chamberId,
+    actorUid: uid,
+    actorEmail: email,
+    action,
     details,
     timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19)
   };

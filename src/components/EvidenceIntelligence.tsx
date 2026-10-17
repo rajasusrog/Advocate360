@@ -19,10 +19,36 @@ import { EvidenceItem, EvidenceScorecard } from '../types';
 import { SAMPLE_EVIDENCE, SAMPLE_EVIDENCE_SCORECARD } from '../data/landingDemoData';
 import { EvidenceDependencyGraph } from './EvidenceDependencyGraph';
 
-export const EvidenceIntelligence: React.FC = () => {
-  const [evidenceList, setEvidenceList] = useState<EvidenceItem[]>(SAMPLE_EVIDENCE);
+import { CaseFile } from '../types';
+import { useMatterEvidence } from '../lib/useMatterData';
+
+interface EvidenceIntelligenceProps {
+  selectedCase?: CaseFile | null;
+  chamberId?: string;
+}
+
+export const EvidenceIntelligence: React.FC<EvidenceIntelligenceProps> = ({ selectedCase, chamberId }) => {
+  const activeCaseId = selectedCase?.id || '';
+  const {
+    evidenceList: hookEvidenceList,
+    loading: evidenceLoading,
+    error: evidenceLoadError,
+    addEvidenceItem
+  } = useMatterEvidence(chamberId || '', activeCaseId);
+  const [evidenceList, setEvidenceList] = useState<EvidenceItem[]>([]);
+
+  React.useEffect(() => {
+    if (hookEvidenceList && hookEvidenceList.length > 0) {
+      setEvidenceList(hookEvidenceList);
+    } else if (selectedCase && (selectedCase as any).evidenceItems) {
+      setEvidenceList((selectedCase as any).evidenceItems);
+    } else {
+      setEvidenceList([]);
+    }
+  }, [hookEvidenceList, selectedCase?.id]);
+
   const [scorecard, setScorecard] = useState<EvidenceScorecard | null>(SAMPLE_EVIDENCE_SCORECARD);
-  const [activeView, setActiveView] = useState<'graph' | 'matrix'>('graph');
+  const [activeView, setActiveView] = useState<'graph' | 'matrix'>('matrix');
 
   const handleLoadSampleData = () => {
     setEvidenceList(SAMPLE_EVIDENCE);
@@ -35,30 +61,65 @@ export const EvidenceIntelligence: React.FC = () => {
   const [newType, setNewType] = useState<EvidenceItem['type']>('Document');
   const [newProvesWhat, setNewProvesWhat] = useState<string>('');
   const [newCannotProve, setNewCannotProve] = useState<string>('');
+  const [isSavingEvidence, setIsSavingEvidence] = useState<boolean>(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
 
-  const handleAddEvidence = () => {
-    if (!newTitle.trim()) return;
-    const newItem: EvidenceItem = {
-      id: `ev-${Date.now()}`,
-      caseId: 'case-101',
-      title: newTitle,
+  const handleAddEvidence = async () => {
+    if (!newTitle.trim() || isSavingEvidence) return;
+    setSaveError(null);
+    setSaveSuccess(null);
+
+    const payload: Omit<EvidenceItem, 'id'> = {
+      caseId: activeCaseId || 'unassigned',
+      title: newTitle.trim(),
       type: newType,
       submittedBy: 'Client',
-      provesWhat: newProvesWhat || 'Corroborates claim',
-      cannotProve: newCannotProve || 'Requires supporting witness',
+      provesWhat: newProvesWhat.trim() || 'Corroborates claim',
+      cannotProve: newCannotProve.trim() || 'Requires supporting witness',
       date: new Date().toISOString().split('T')[0],
-      status: 'Verified'
+      status: 'Unverified'
     };
 
-    setEvidenceList([newItem, ...evidenceList]);
-    setShowAddModal(false);
-    setNewTitle('');
-    setNewProvesWhat('');
-    setNewCannotProve('');
+    if (!chamberId || !activeCaseId || activeCaseId === 'unassigned') {
+      setSaveError('Cannot save evidence to database: select an active matter in your workspace first.');
+      return;
+    }
+
+    setIsSavingEvidence(true);
+    try {
+      const created = await addEvidenceItem(payload);
+      setEvidenceList((prev) => [created, ...prev.filter((e) => e.id !== created.id)]);
+      setShowAddModal(false);
+      setNewTitle('');
+      setNewProvesWhat('');
+      setNewCannotProve('');
+      setSaveSuccess(`Saved evidence "${created.title}" to PostgreSQL.`);
+      setTimeout(() => setSaveSuccess(null), 4000);
+    } catch (err: any) {
+      console.error('Failed to persist evidence item to Supabase:', err);
+      setSaveError(err?.message || 'Failed to save evidence record to database. Your input has been preserved.');
+    } finally {
+      setIsSavingEvidence(false);
+    }
   };
 
   return (
     <div className="space-y-6">
+      {(evidenceLoadError || saveError) && (
+        <div role="alert" className="p-3 bg-[#FFF4F2] border-2 border-[#FF4444] text-xs text-[#FF4444] font-bold flex items-center justify-between">
+          <span>⚠️ {saveError || evidenceLoadError}</span>
+          {saveError && (
+            <button onClick={() => setSaveError(null)} className="underline ml-3">Dismiss</button>
+          )}
+        </div>
+      )}
+      {saveSuccess && (
+        <div role="status" className="p-3 bg-emerald-50 border-2 border-emerald-700 text-xs text-emerald-900 font-bold flex items-center justify-between">
+          <span>✓ {saveSuccess}</span>
+          <button onClick={() => setSaveSuccess(null)} className="underline ml-3">Dismiss</button>
+        </div>
+      )}
       {/* Editorial Header Banner */}
       <div className="bg-[#F5F2EF] text-[#1A1A1A] p-6 border-2 border-[#1A1A1A] shadow-xs">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -74,7 +135,10 @@ export const EvidenceIntelligence: React.FC = () => {
           </div>
 
           <button
-            onClick={() => setShowAddModal(true)}
+            onClick={() => {
+              setSaveError(null);
+              setShowAddModal(true);
+            }}
             className="self-start md:self-auto bg-[#1A1A1A] hover:bg-black text-amber-400 font-bold border border-[#1A1A1A] text-xs uppercase tracking-wider px-4 py-2.5 flex items-center gap-2 transition-colors shadow-xs"
           >
             <Plus className="w-4 h-4" />
@@ -262,6 +326,12 @@ export const EvidenceIntelligence: React.FC = () => {
               </button>
             </div>
 
+            {saveError && (
+              <div role="alert" className="p-2.5 bg-[#FFF4F2] border border-[#FF4444] text-[11px] text-[#FF4444] font-bold">
+                ⚠️ {saveError}
+              </div>
+            )}
+
             <div className="space-y-3 text-xs">
               <div>
                 <label className="font-bold uppercase tracking-wider text-[10px] text-[#1A1A1A]">Title / Document Name:</label>
@@ -315,15 +385,17 @@ export const EvidenceIntelligence: React.FC = () => {
             <div className="flex items-center gap-3 pt-3 border-t border-[#1A1A1A]/20">
               <button
                 onClick={() => setShowAddModal(false)}
+                disabled={isSavingEvidence}
                 className="flex-1 py-2 bg-[#F5F2EF] text-[#1A1A1A] border border-[#1A1A1A] font-bold uppercase tracking-wider text-xs"
               >
                 Cancel
               </button>
               <button
                 onClick={handleAddEvidence}
-                className="flex-1 py-2 bg-[#1A1A1A] hover:bg-black text-amber-400 border border-[#1A1A1A] font-bold uppercase tracking-wider text-xs"
+                disabled={isSavingEvidence || !newTitle.trim()}
+                className="flex-1 py-2 bg-[#1A1A1A] hover:bg-black text-amber-400 border border-[#1A1A1A] font-bold uppercase tracking-wider text-xs disabled:opacity-50"
               >
-                Save Record
+                {isSavingEvidence ? 'Saving...' : 'Save Record'}
               </button>
             </div>
           </div>

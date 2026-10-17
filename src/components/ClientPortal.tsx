@@ -208,12 +208,14 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   };
 
   const handleSendEmailSimulation = () => {
-    setEmailSentNotice(true);
-    setTimeout(() => {
-      setEmailSentNotice(false);
-      setShowEmailModal(false);
-    }, 2000);
-    logAuditEvent('AI_GENERATION', `Dispatched Email Invitation to client: ${clientEmail} for matter ${currentCase.title}`);
+    // Truthful handling: Email dispatch requires external provider (SMTP/SendGrid/SES)
+    // Copy the secure share link directly instead of fake dispatching.
+    if (latestGeneratedInvite) {
+      navigator.clipboard.writeText(latestGeneratedInvite.accessUrl);
+      setCopiedLink(true);
+      setTimeout(() => setCopiedLink(false), 2000);
+      logAuditEvent('ROLE_CHANGE', `Copied Secure Share Link for client: ${clientEmail} (Email provider unconfigured)`);
+    }
   };
 
   const handleSendMessage = async () => {
@@ -973,26 +975,24 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
               </div>
             </div>
 
-            {emailSentNotice && (
-              <div className="p-2 bg-emerald-50 border border-emerald-500 text-emerald-800 text-xs text-center font-bold">
-                ✓ Invitation email dispatched successfully!
-              </div>
-            )}
+            <div className="p-2.5 bg-amber-50 border border-amber-400 text-amber-900 text-[11px] font-mono flex items-center justify-between">
+              <span>Email Service Status: <strong>Not Configured (SMTP/SendGrid)</strong></span>
+              <span className="text-[10px] text-amber-800">Use Secure Link</span>
+            </div>
 
             <div className="flex items-center gap-3 pt-2 border-t border-[#1A1A1A]">
               <button
                 onClick={() => setShowEmailModal(false)}
                 className="flex-1 py-2 bg-[#F5F2EF] text-[#1A1A1A] border border-[#1A1A1A] font-bold uppercase tracking-wider text-xs"
               >
-                Cancel
+                Close
               </button>
               <button
                 onClick={handleSendEmailSimulation}
-                disabled={emailSentNotice}
-                className="flex-1 py-2 bg-[#1A1A1A] hover:bg-black text-amber-400 border border-[#1A1A1A] font-bold uppercase tracking-wider text-xs flex items-center justify-center gap-1.5"
+                className="flex-1 py-2 bg-[#1A1A1A] hover:bg-black text-amber-400 border border-[#1A1A1A] font-bold uppercase tracking-wider text-xs flex items-center justify-center gap-1.5 cursor-pointer"
               >
-                <Mail className="w-3.5 h-3.5" />
-                <span>{emailSentNotice ? 'Sent' : 'Dispatch Email'}</span>
+                <Share2 className="w-3.5 h-3.5" />
+                <span>{copiedLink ? 'Link Copied!' : 'Copy Secure Share Link'}</span>
               </button>
             </div>
           </div>

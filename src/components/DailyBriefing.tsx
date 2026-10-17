@@ -7,7 +7,6 @@ import {
   Download, 
   Volume2, 
   VolumeX, 
-  FileText, 
   Share2, 
   Check, 
   Sparkles, 
@@ -17,9 +16,14 @@ import {
   ArrowUpRight,
   Printer,
   ChevronRight,
-  Filter
+  Bell,
+  CheckCheck,
+  ShieldAlert,
+  Flame,
+  FileCheck,
+  ExternalLink
 } from 'lucide-react';
-import { CalendarEvent, PracticeTask, CaseFile } from '../types';
+import { CalendarEvent, PracticeTask, CaseFile, NotificationItem } from '../types';
 import { downloadICS } from '../lib/calendarExport';
 import { logAuditEvent } from '../lib/auditLogger';
 
@@ -27,22 +31,29 @@ interface DailyBriefingProps {
   cases: CaseFile[];
   calendarEvents: CalendarEvent[];
   tasks: PracticeTask[];
+  notifications?: NotificationItem[];
   onNavigateTab: (tab: string) => void;
   setSelectedCaseId?: (caseId: string) => void;
   onToggleTask?: (taskId: string) => void;
+  onMarkNotificationAsRead?: (notificationId: string) => void;
+  onMarkAllNotificationsAsRead?: () => void;
 }
 
 export const DailyBriefing: React.FC<DailyBriefingProps> = ({
   cases,
   calendarEvents,
   tasks,
+  notifications = [],
   onNavigateTab,
   setSelectedCaseId,
-  onToggleTask
+  onToggleTask,
+  onMarkNotificationAsRead,
+  onMarkAllNotificationsAsRead
 }) => {
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
   const [copiedSummary, setCopiedSummary] = useState(false);
   const [filterView, setFilterView] = useState<'today' | 'week'>('today');
+  const [notificationFilter, setNotificationFilter] = useState<'unread' | 'all'>('unread');
 
   // Format today's date in local and Indian Court format
   const todayObj = new Date();
@@ -54,38 +65,56 @@ export const DailyBriefing: React.FC<DailyBriefingProps> = ({
     day: 'numeric'
   });
 
-  // Hearings filter: if today has fixtures use today, otherwise show upcoming week
+  // Hearings filter: if today has fixtures use today, otherwise show upcoming fixtures
   const todayHearings = calendarEvents.filter(e => e.date === todayStr);
   const displayHearings = filterView === 'today' && todayHearings.length > 0 
     ? todayHearings 
     : calendarEvents.slice(0, 5);
 
-  // Urgent pending tasks
+  // Critical deadlines & urgent pending tasks
   const urgentTasks = tasks.filter(t => t.status !== 'Completed' && (t.priority === 'High' || t.dueDate <= todayStr));
   const otherTasks = tasks.filter(t => t.status !== 'Completed' && t.priority !== 'High');
 
-  // Critical chamber alerts
-  const urgentAlerts = [
+  // Critical Chamber Statutory & Procedural Deadlines
+  const criticalDeadlines = [
     {
-      id: 'alert-1',
+      id: 'deadline-1',
       title: 'Limitation Expiry Alert (Art. 59 Limitation Act)',
       matter: 'Ramesh Kumar vs. Suresh Kumar',
-      message: '3-year limitation to cancel 2021 unregistered partition deed is approaching. File rejoinder prior to next date.',
+      message: '3-year limitation to cancel 2021 unregistered deed is approaching. File rejoinder prior to next date.',
       severity: 'CRITICAL',
-      caseId: 'case-101'
+      cutoff: 'Today, 4:00 PM Registry',
+      caseId: 'case-101',
+      tab: 'risk'
     },
     {
-      id: 'alert-2',
-      title: 'Section 65B Certificate Required',
+      id: 'deadline-2',
+      title: 'Section 65B / BSA Electronic Evidence Affidavit',
       matter: 'State vs. Vikram Anand',
-      message: 'Electronic WhatsApp transcript printouts must be accompanied by advocate affidavit u/s 65B Indian Evidence Act / BSA.',
+      message: 'WhatsApp transcript records must be submitted with mandatory advocate certificate under Sec 65B.',
       severity: 'URGENT',
-      caseId: 'case-103'
+      cutoff: 'Prior to Trial Call',
+      caseId: 'case-103',
+      tab: 'repository'
+    },
+    {
+      id: 'deadline-3',
+      title: 'Commercial Suit Written Statement Filing Window',
+      matter: 'Apex Tech Ltd vs. Vertex Infra',
+      message: '30-day statutory window under Commercial Courts Act requires filing rejoinder with certified invoices.',
+      severity: 'HIGH',
+      cutoff: '2 Days Remaining',
+      caseId: 'case-102',
+      tab: 'workflow'
     }
   ];
 
+  // Unread case notifications
+  const unreadNotifications = notifications.filter(n => !n.isRead);
+  const displayedNotifications = notificationFilter === 'unread' ? unreadNotifications : notifications;
+
   // AI Synopsis Generation
-  const aiSynopsis = `Good morning Advocate. For ${todayFormatted}, your chamber has ${displayHearings.length} scheduled court hearings, with primary focus on ${displayHearings[0]?.court || 'Sessions Court'} at ${displayHearings[0]?.time || '10:30 AM'}. You have ${urgentTasks.length} urgent tasks pending before registry filing cutoff at 4:00 PM. Two limitation alerts require advocate attention today.`;
+  const aiSynopsis = `Good morning Advocate. For ${todayFormatted}, your chamber has ${displayHearings.length} scheduled court hearings, with primary listing at ${displayHearings[0]?.court || 'City Civil Court'} (${displayHearings[0]?.time || '10:30 AM'}). There are ${criticalDeadlines.length} critical statutory deadlines and ${urgentTasks.length} urgent tasks pending before registry filing cutoff at 4:00 PM. You have ${unreadNotifications.length} unread case notification${unreadNotifications.length === 1 ? '' : 's'} requiring immediate attention.`;
 
   // Speech synthesis for AI Daily Briefing readout
   const handleToggleSpeech = () => {
@@ -124,14 +153,17 @@ export const DailyBriefing: React.FC<DailyBriefingProps> = ({
       `=== ADVOCATE360 MORNING CAUSE LIST & BRIEFING ===`,
       `Date: ${todayFormatted}`,
       ``,
-      `[SCHEDULED COURT HEARINGS]`,
+      `[TODAY'S COURT HEARINGS]`,
       ...displayHearings.map((h, i) => `${i + 1}. [${h.time}] ${h.court} - ${h.caseTitle} (${h.hearingType}) | Bench: ${h.judge || 'Hon. Court'}`),
+      ``,
+      `[CRITICAL STATUTORY DEADLINES]`,
+      ...criticalDeadlines.map((d, i) => `${i + 1}. [${d.severity}] ${d.title} - ${d.matter} (Cutoff: ${d.cutoff})`),
       ``,
       `[URGENT ACTION ITEMS]`,
       ...urgentTasks.map((t, i) => `${i + 1}. Due ${t.dueDate}: ${t.title} [Priority: ${t.priority}] (Assigned: ${t.assignedTo || 'Chamber'})`),
       ``,
-      `[STATUTORY LIMITATION & ALERTS]`,
-      ...urgentAlerts.map((a, i) => `${i + 1}. [${a.severity}] ${a.title} - ${a.matter}: ${a.message}`)
+      `[UNREAD CASE NOTIFICATIONS: ${unreadNotifications.length}]`,
+      ...unreadNotifications.map((n, i) => `${i + 1}. [${n.category.toUpperCase()}] ${n.title}: ${n.body}`)
     ].join('\n');
 
     navigator.clipboard.writeText(listText);
@@ -149,20 +181,26 @@ export const DailyBriefing: React.FC<DailyBriefingProps> = ({
       {/* Top Banner & Control Ribbon */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b-2 border-[#1A1A1A] pb-5">
         <div className="space-y-1">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="text-[10px] uppercase font-bold tracking-[0.2em] bg-[#1A1A1A] text-amber-400 px-2.5 py-0.5">
-              Morning Cause List Briefing
+              Daily Briefing Command
             </span>
             <span className="text-[10px] font-mono uppercase tracking-widest text-[#B45309] font-bold">
               • Working Court Day
             </span>
+            {unreadNotifications.length > 0 && (
+              <span className="text-[10px] font-bold uppercase tracking-wider bg-rose-100 text-rose-800 border border-rose-300 px-2 py-0.5 flex items-center gap-1 animate-pulse">
+                <Bell className="w-3 h-3 text-rose-700" />
+                {unreadNotifications.length} Unread Notifications
+              </span>
+            )}
           </div>
           
           <h2 className="font-serif text-2xl sm:text-3xl font-bold italic text-[#1A1A1A]">
             Advocate Daily Briefing — {todayFormatted}
           </h2>
           <p className="text-xs text-[#555555]">
-            Aggregated intelligence across court cause lists, registry deadlines, and high-priority chamber matters.
+            Aggregating today's hearing schedule, critical court deadlines, and unread case alerts for the advocate.
           </p>
         </div>
 
@@ -195,7 +233,7 @@ export const DailyBriefing: React.FC<DailyBriefingProps> = ({
           <button
             onClick={handleExportTodayICS}
             className="px-3 py-2 bg-[#FDFCFB] hover:bg-white text-[#1A1A1A] border-2 border-[#1A1A1A] text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 transition-colors shadow-xs"
-            title="Export Today's Hearings to .ics (Google Calendar / Apple Calendar)"
+            title="Sync Today's Hearings with Google Calendar / Outlook (.ics)"
           >
             <Download className="w-3.5 h-3.5 text-[#B45309]" />
             <span>Sync Calendar (.ICS)</span>
@@ -239,17 +277,17 @@ export const DailyBriefing: React.FC<DailyBriefingProps> = ({
         </div>
       </div>
 
-      {/* Main 3-Column Briefing Grid */}
+      {/* Main 3-Column Briefing Grid: Hearings | Deadlines | Unread Notifications */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         
-        {/* Column 1: Today's Hearings & Cause List */}
+        {/* Column 1: Today's Hearing Schedule */}
         <div className="bg-[#FDFCFB] border-2 border-[#1A1A1A] p-4 flex flex-col justify-between space-y-4">
           <div>
             <div className="flex items-center justify-between border-b-2 border-[#1A1A1A] pb-2.5 mb-3">
               <div className="flex items-center gap-2">
                 <Gavel className="w-4 h-4 text-rose-700" />
                 <h3 className="text-xs font-bold uppercase tracking-wider text-[#1A1A1A]">
-                  Court Fixtures ({displayHearings.length})
+                  Hearing Schedule ({displayHearings.length})
                 </h3>
               </div>
               <div className="flex items-center gap-1 text-[10px] font-mono">
@@ -342,33 +380,71 @@ export const DailyBriefing: React.FC<DailyBriefingProps> = ({
           </button>
         </div>
 
-        {/* Column 2: Urgent Pending Tasks & Action Items */}
+        {/* Column 2: Critical Deadlines & High-Priority Actions */}
         <div className="bg-[#FDFCFB] border-2 border-[#1A1A1A] p-4 flex flex-col justify-between space-y-4">
           <div>
             <div className="flex items-center justify-between border-b-2 border-[#1A1A1A] pb-2.5 mb-3">
               <div className="flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4 text-[#B45309]" />
+                <Clock className="w-4 h-4 text-purple-700" />
                 <h3 className="text-xs font-bold uppercase tracking-wider text-[#1A1A1A]">
-                  Priority Actions ({urgentTasks.length})
+                  Critical Deadlines ({criticalDeadlines.length})
                 </h3>
               </div>
               <span className="text-[9px] uppercase font-bold tracking-widest bg-rose-700 text-white px-1.5 py-0.2">
-                Filing Cutoff: 4 PM
+                Registry Cutoff: 4 PM
               </span>
             </div>
 
-            <div className="space-y-2.5">
-              {urgentTasks.length === 0 ? (
-                <div className="p-4 text-center text-slate-500 italic text-xs">
-                  All urgent tasks completed!
+            <div className="space-y-3">
+              {/* Statutory limitation and filing deadlines */}
+              {criticalDeadlines.map((d) => (
+                <div
+                  key={d.id}
+                  className="p-3 bg-red-50/60 border border-red-800 space-y-1.5 hover:bg-red-50 transition-colors"
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-[8px] font-black uppercase tracking-wider bg-red-700 text-white px-1.5 py-0.2">
+                      {d.severity}
+                    </span>
+                    <span className="text-[10px] font-mono text-red-900 font-bold">
+                      {d.cutoff}
+                    </span>
+                  </div>
+
+                  <h4 className="font-serif font-bold text-xs text-red-950">
+                    {d.title}
+                  </h4>
+
+                  <p className="text-[11px] text-red-900/90 leading-relaxed font-sans">
+                    {d.message}
+                  </p>
+
+                  <div className="pt-1.5 border-t border-red-200 flex justify-between items-center text-[10px]">
+                    <span className="text-slate-600 font-serif italic truncate max-w-[140px]">{d.matter}</span>
+                    <button
+                      onClick={() => {
+                        if (setSelectedCaseId) setSelectedCaseId(d.caseId);
+                        onNavigateTab(d.tab);
+                      }}
+                      className="font-bold uppercase tracking-wider text-red-800 hover:text-black flex items-center gap-0.5"
+                    >
+                      Address Now <ChevronRight className="w-3 h-3" />
+                    </button>
+                  </div>
                 </div>
-              ) : (
-                urgentTasks.map((t) => (
-                  <div
-                    key={t.id}
-                    className="p-3 bg-[#F9F7F5] border border-[#1A1A1A] space-y-2 hover:border-[#B45309] transition-colors"
-                  >
-                    <div className="flex items-start justify-between gap-2">
+              ))}
+
+              {/* Priority chamber tasks */}
+              <div className="pt-2 border-t border-slate-300">
+                <div className="text-[10px] uppercase font-bold text-slate-500 mb-2 flex items-center justify-between">
+                  <span>Priority Chamber Tasks ({urgentTasks.length})</span>
+                </div>
+                <div className="space-y-2">
+                  {urgentTasks.slice(0, 2).map((t) => (
+                    <div
+                      key={t.id}
+                      className="p-2 bg-[#F9F7F5] border border-slate-300 flex items-start justify-between gap-2"
+                    >
                       <div className="flex items-start gap-2">
                         <input
                           type="checkbox"
@@ -376,35 +452,20 @@ export const DailyBriefing: React.FC<DailyBriefingProps> = ({
                           onChange={() => onToggleTask && onToggleTask(t.id)}
                           className="mt-0.5 accent-[#B45309] cursor-pointer"
                         />
-                        <h4 className="font-serif font-bold italic text-xs text-[#1A1A1A] leading-tight">
-                          {t.title}
-                        </h4>
+                        <div>
+                          <p className="font-serif font-bold italic text-xs text-[#1A1A1A] leading-tight">
+                            {t.title}
+                          </p>
+                          <span className="text-[10px] font-mono text-slate-500">Due: {t.dueDate}</span>
+                        </div>
                       </div>
-                      <span className="text-[8px] font-bold uppercase tracking-widest px-1 py-0.2 bg-rose-100 text-rose-800 border border-rose-300 shrink-0">
+                      <span className="text-[8px] font-bold uppercase px-1 py-0.2 bg-amber-100 text-amber-800 shrink-0">
                         {t.priority}
                       </span>
                     </div>
-
-                    <div className="flex items-center justify-between text-[10px] text-slate-600 font-mono pt-1 border-t border-slate-300">
-                      <span>Due: <strong>{t.dueDate}</strong></span>
-                      <span className="text-[#B45309] font-bold">{t.assignedTo || 'Junior Associate'}</span>
-                    </div>
-                  </div>
-                ))
-              )}
-
-              {/* Other tasks summary */}
-              {otherTasks.length > 0 && (
-                <div className="p-2 bg-slate-50 border border-slate-300 text-[11px] text-slate-600 flex items-center justify-between">
-                  <span>+ {otherTasks.length} standard practice tasks in pipeline</span>
-                  <button
-                    onClick={() => onNavigateTab('dashboard')}
-                    className="font-bold underline text-[#1A1A1A]"
-                  >
-                    View All
-                  </button>
+                  ))}
                 </div>
-              )}
+              </div>
             </div>
           </div>
 
@@ -416,65 +477,115 @@ export const DailyBriefing: React.FC<DailyBriefingProps> = ({
           </button>
         </div>
 
-        {/* Column 3: Critical Limitation & Red Alerts */}
+        {/* Column 3: Unread Case Notifications */}
         <div className="bg-[#FDFCFB] border-2 border-[#1A1A1A] p-4 flex flex-col justify-between space-y-4">
           <div>
             <div className="flex items-center justify-between border-b-2 border-[#1A1A1A] pb-2.5 mb-3">
               <div className="flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 text-red-600" />
+                <Bell className="w-4 h-4 text-[#B45309]" />
                 <h3 className="text-xs font-bold uppercase tracking-wider text-[#1A1A1A]">
-                  Limitation & Risk Alerts
+                  Unread Notifications ({unreadNotifications.length})
                 </h3>
               </div>
-              <span className="text-[9px] uppercase font-bold tracking-widest bg-red-100 text-red-900 border border-red-300 px-1.5 py-0.2">
-                Statutory
-              </span>
+              
+              <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1 text-[10px] font-mono">
+                  <button
+                    onClick={() => setNotificationFilter('unread')}
+                    className={`px-1.5 py-0.5 font-bold uppercase border ${
+                      notificationFilter === 'unread' ? 'bg-[#1A1A1A] text-white' : 'bg-slate-100 text-slate-600'
+                    }`}
+                  >
+                    Unread
+                  </button>
+                  <button
+                    onClick={() => setNotificationFilter('all')}
+                    className={`px-1.5 py-0.5 font-bold uppercase border ${
+                      notificationFilter === 'all' ? 'bg-[#1A1A1A] text-white' : 'bg-slate-100 text-slate-600'
+                    }`}
+                  >
+                    All ({notifications.length})
+                  </button>
+                </div>
+
+                {unreadNotifications.length > 0 && onMarkAllNotificationsAsRead && (
+                  <button
+                    onClick={onMarkAllNotificationsAsRead}
+                    className="text-[9px] font-bold uppercase tracking-wider text-[#B45309] hover:underline"
+                    title="Mark all notifications as read"
+                  >
+                    Clear All
+                  </button>
+                )}
+              </div>
             </div>
 
-            <div className="space-y-3">
-              {urgentAlerts.map((alert) => (
-                <div
-                  key={alert.id}
-                  className="p-3 bg-red-50/50 border-2 border-red-800 space-y-1.5"
-                >
-                  <div className="flex items-center justify-between gap-1">
-                    <span className="text-[8px] font-black uppercase tracking-wider bg-red-700 text-white px-1.5 py-0.2">
-                      {alert.severity}
-                    </span>
-                    <span className="text-[10px] font-mono text-red-900 font-bold truncate max-w-[150px]">
-                      {alert.matter}
-                    </span>
-                  </div>
-
-                  <h4 className="font-serif font-bold text-xs text-red-950">
-                    {alert.title}
-                  </h4>
-
-                  <p className="text-[11px] text-red-900/90 leading-relaxed font-sans">
-                    {alert.message}
-                  </p>
-
-                  <div className="pt-1.5 border-t border-red-200 flex justify-end">
-                    <button
-                      onClick={() => {
-                        if (setSelectedCaseId) setSelectedCaseId(alert.caseId);
-                        onNavigateTab('risk');
-                      }}
-                      className="text-[10px] font-bold uppercase tracking-wider text-red-800 hover:text-black flex items-center gap-0.5"
-                    >
-                      Audit Limitation <ChevronRight className="w-3 h-3" />
-                    </button>
-                  </div>
+            <div className="space-y-2.5">
+              {displayedNotifications.length === 0 ? (
+                <div className="p-6 text-center text-slate-500 italic text-xs space-y-2">
+                  <CheckCheck className="w-6 h-6 text-emerald-600 mx-auto" />
+                  <p>All case notifications are up to date.</p>
                 </div>
-              ))}
+              ) : (
+                displayedNotifications.map((n) => (
+                  <div
+                    key={n.id}
+                    className={`p-3 border transition-colors space-y-1.5 ${
+                      !n.isRead 
+                        ? 'bg-amber-50/40 border-amber-500' 
+                        : 'bg-[#F9F7F5] border-slate-300 opacity-80'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className={`w-2 h-2 rounded-full ${!n.isRead ? 'bg-amber-500 animate-ping' : 'bg-slate-300'}`} />
+                        <span className="text-[9px] font-bold uppercase tracking-wider text-slate-600">
+                          {n.category.replace('_', ' ')}
+                        </span>
+                      </div>
+                      <span className="text-[10px] font-mono text-slate-400">
+                        {n.timestamp}
+                      </span>
+                    </div>
+
+                    <h4 className="font-serif font-bold text-xs text-[#1A1A1A] leading-tight">
+                      {n.title}
+                    </h4>
+
+                    <p className="text-[11px] text-slate-600 line-clamp-2">
+                      {n.body}
+                    </p>
+
+                    <div className="pt-1.5 border-t border-slate-200 flex items-center justify-between text-[10px]">
+                      {n.linkTab ? (
+                        <button
+                          onClick={() => onNavigateTab(n.linkTab || 'dashboard')}
+                          className="font-bold text-[#B45309] hover:underline flex items-center gap-0.5 uppercase tracking-wider"
+                        >
+                          View In Case <ExternalLink className="w-3 h-3" />
+                        </button>
+                      ) : <span />}
+
+                      {!n.isRead && onMarkNotificationAsRead && (
+                        <button
+                          onClick={() => onMarkNotificationAsRead(n.id)}
+                          className="font-bold text-slate-500 hover:text-black uppercase tracking-wider text-[9px]"
+                        >
+                          Mark Read
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
           </div>
 
           <button
-            onClick={() => onNavigateTab('risk')}
+            onClick={() => onNavigateTab('dashboard')}
             className="w-full py-2 bg-[#FDFCFB] hover:bg-white text-[#1A1A1A] text-[11px] font-bold uppercase tracking-wider text-center border-2 border-[#1A1A1A] transition-colors"
           >
-            Review Limitation Act Analyzer
+            View Full Notification History
           </button>
         </div>
 

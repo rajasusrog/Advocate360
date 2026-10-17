@@ -15,18 +15,15 @@ import {
   Sparkles
 } from 'lucide-react';
 import { ChamberRole } from '../types';
-import { db, cleanFirestoreData } from '../firebase';
-import { collection, doc, setDoc, onSnapshot } from 'firebase/firestore';
+import {
+  listWorkspaceMembers,
+  inviteWorkspaceMemberInDb,
+  updateWorkspaceMemberRoleInDb,
+  WorkspaceMemberRecord,
+} from '../lib/useMatterData';
 import { logAuditEvent } from '../lib/auditLogger';
 
-export interface ChamberMemberRecord {
-  id: string;
-  email: string;
-  name: string;
-  role: ChamberRole;
-  status: 'Active' | 'Pending Invitation' | 'Revoked';
-  invitedAt: string;
-}
+export type ChamberMemberRecord = WorkspaceMemberRecord;
 
 interface RoleManagerModalProps {
   isOpen: boolean;
@@ -51,13 +48,15 @@ export const RoleManagerModal: React.FC<RoleManagerModalProps> = ({
   
   // Member Roster State
   const [members, setMembers] = useState<ChamberMemberRecord[]>([]);
+  const [loadingMembers, setLoadingMembers] = useState(false);
   const [newEmail, setNewEmail] = useState('');
   const [newName, setNewName] = useState('');
   const [newRole, setNewRole] = useState<ChamberRole>('JUNIOR_ADVOCATE');
   const [isSavingMember, setIsSavingMember] = useState(false);
   const [memberMessage, setMemberMessage] = useState<string | null>(null);
+  const [memberError, setMemberError] = useState<string | null>(null);
 
-  // Default seed members if firestore collection empty
+  // Default seed members if no workspace active (demo mode)
   const defaultMembers: ChamberMemberRecord[] = [
     {
       id: 'm1',
@@ -93,71 +92,105 @@ export const RoleManagerModal: React.FC<RoleManagerModalProps> = ({
     }
   ];
 
-  // Load live chamber members from Firestore
+  // Load workspace members from Supabase PostgreSQL (`public.workspace_memberships`)
   useEffect(() => {
+    if (!isOpen) return;
     if (!chamberId) {
       setMembers(defaultMembers);
       return;
     }
 
-    try {
-      const membersRef = collection(db, 'chambers', chamberId, 'members');
-      const unsub = onSnapshot(membersRef, (snap) => {
-        const loaded: ChamberMemberRecord[] = [];
-        snap.forEach(d => {
-          loaded.push({ id: d.id, ...d.data() } as ChamberMemberRecord);
-        });
-        if (loaded.length > 0) {
-          setMembers(loaded);
-        } else {
-          setMembers(defaultMembers);
-        }
-      }, (err) => {
-        console.error('Firestore members permission error:', err);
-        setMembers(defaultMembers);
+    let cancelled = false;
+    setLoadingMembers(true);
+    setMemberError(null);
+
+    listWorkspaceMembers(chamberId)
+      .then((loaded) => {
+        if (cancelled) return;
+        setMembers(loaded);
+      })
+      .catch((err: any) => {
+        if (cancelled) return;
+        console.error('Supabase workspace_memberships query error:', err);
+        setMemberError(err?.message || 'Failed to load workspace members from PostgreSQL.');
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingMembers(false);
       });
-      return () => unsub();
-    } catch {
-      setMembers(defaultMembers);
-    }
-  }, [chamberId]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [chamberId, isOpen]);
 
   if (!isOpen) return null;
 
   const handleInviteMember = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newEmail.trim() || !newName.trim()) return;
+    if (!newEmail.trim() || !newName.trim() || isSavingMember) return;
 
     setIsSavingMember(true);
     setMemberMessage(null);
+    setMemberError(null);
 
-    const memberId = newEmail.toLowerCase().replace(/[^a-z0-9]/g, '_');
-    const newRecord: ChamberMemberRecord = {
-      id: memberId,
-      email: newEmail.trim(),
-      name: newName.trim(),
-      role: newRole,
-      status: 'Pending Invitation',
-      invitedAt: new Date().toISOString().split('T')[0]
-    };
+    if (!chamberId) {
+      setMemberError('Cannot save member record: active workspace ID is required.');
+      setIsSavingMember(false);
+      return;
+    }
 
     try {
-      if (chamberId) {
-        await setDoc(doc(db, 'chambers', chamberId, 'members', memberId), cleanFirestoreData(newRecord));
-      } else {
-        setMembers(prev => [...prev, newRecord]);
-      }
+      const created = await inviteWorkspaceMemberInDb(chamberId, {
+        email: newEmail.trim(),
+        name: newName.trim(),
+        role: newRole,
+      });
 
-      logAuditEvent('ROLE_CHANGE', `Invited new Chamber Member [${newName}] with bound role [${newRole}]`);
-      setMemberMessage(`Invitation sent to ${newEmail}. Role [${newRole}] assigned and bound in Firestore.`);
+      setMembers((prev) => [...prev, created]);
+      logAuditEvent(
+        'ROLE_CHANGE',
+        `Invited new Workspace Member [${created.name}] with bound role [${created.role}]`,
+        { chamberId }
+      );
+      setMemberMessage(
+        `Saved member record for ${created.email} with bound role [${created.role}] in PostgreSQL.`
+      );
       setNewEmail('');
       setNewName('');
-    } catch (err) {
-      console.error('Error adding member:', err);
-      setMemberMessage('Failed to save member in Firestore. Local fallback active.');
-      setMembers(prev => [...prev, newRecord]);
+    } catch (err: any) {
+      console.error('Error adding workspace member in Supabase:', err);
+      setMemberError(
+        err?.message || 'Failed to save member in PostgreSQL. Your input has been preserved.'
+      );
     } finally {
       setIsSavingMember(false);
+    }
+  };
+
+  const handleUpdateMemberRole = async (membershipId: string, nextRole: ChamberRole) => {
+    if (!chamberId) return;
+    setMemberError(null);
+    setMemberMessage(null);
+    const previousMembers = [...members];
+    setMembers((prev) =>
+      prev.map((m) => (m.id === membershipId ? { ...m, role: nextRole } : m))
+    );
+
+    try {
+      const updated = await updateWorkspaceMemberRoleInDb(chamberId, membershipId, {
+        role: nextRole,
+      });
+      setMembers((prev) => prev.map((m) => (m.id === membershipId ? updated : m)));
+      logAuditEvent(
+        'ROLE_CHANGE',
+        `Updated workspace member [${updated.email}] role to [${updated.role}]`,
+        { chamberId }
+      );
+      setMemberMessage(`Updated ${updated.name}'s role to [${updated.role}] in PostgreSQL.`);
+    } catch (err: any) {
+      console.error('Error updating member role in Supabase:', err);
+      setMembers(previousMembers);
+      setMemberError(err?.message || 'Failed to update member role in PostgreSQL.');
     }
   };
 
@@ -276,7 +309,7 @@ export const RoleManagerModal: React.FC<RoleManagerModalProps> = ({
                 <span>Production Security Architecture</span>
               </div>
               <p className="text-xs text-[#555555] leading-relaxed">
-                In a production deployment, users do not pick their own roles upon logging in. Chamber Owners invite users by email and bind their assigned role directly into Firestore security records (`/chambers/{'{chamberId}'}/members/{'{uid}'}`). The user automatically inherits their assigned role when authenticating.
+                In production, users do not pick their own roles upon logging in. Chamber Owners invite users by email and bind their assigned role directly into Supabase PostgreSQL (`public.workspace_memberships`). Row Level Security (RLS) enforces permissions across all workspace records.
               </p>
             </div>
 
@@ -287,7 +320,7 @@ export const RoleManagerModal: React.FC<RoleManagerModalProps> = ({
                 <span className="font-mono font-bold text-[#1A1A1A]">{userEmail || 'principal@advocate360.law'}</span>
               </div>
               <div className="text-right">
-                <span className="text-[10px] uppercase font-bold text-[#555555] block">Bound Firestore Role:</span>
+                <span className="text-[10px] uppercase font-bold text-[#555555] block">Bound Workspace Role:</span>
                 <span className="inline-flex items-center gap-1.5 bg-[#1A1A1A] text-amber-400 font-mono font-bold px-2.5 py-1 text-xs">
                   <ShieldCheck className="w-3.5 h-3.5" />
                   <span>{officialRole}</span>
@@ -305,9 +338,15 @@ export const RoleManagerModal: React.FC<RoleManagerModalProps> = ({
                 <span className="text-[10px] font-mono text-[#555555]">Chamber Owner / Admin Only</span>
               </div>
 
+              {memberError && (
+                <div role="alert" className="p-2.5 bg-[#FFF4F2] text-[#FF4444] border border-[#FF4444] text-xs font-mono font-bold">
+                  ⚠️ {memberError}
+                </div>
+              )}
+
               {memberMessage && (
-                <div className="p-2.5 bg-emerald-50 text-emerald-900 border border-emerald-300 text-xs font-mono">
-                  {memberMessage}
+                <div role="status" className="p-2.5 bg-emerald-50 text-emerald-900 border border-emerald-300 text-xs font-mono">
+                  ✓ {memberMessage}
                 </div>
               )}
 
@@ -358,18 +397,23 @@ export const RoleManagerModal: React.FC<RoleManagerModalProps> = ({
               <button
                 type="submit"
                 disabled={isSavingMember}
-                className="w-full py-2.5 bg-[#1A1A1A] hover:bg-black text-amber-400 font-bold uppercase text-xs tracking-wider border border-[#1A1A1A] flex items-center justify-center gap-2 transition-colors"
+                className="w-full py-2.5 bg-[#1A1A1A] hover:bg-black text-amber-400 font-bold uppercase text-xs tracking-wider border border-[#1A1A1A] flex items-center justify-center gap-2 transition-colors disabled:opacity-50"
               >
                 <Mail className="w-4 h-4" />
-                <span>{isSavingMember ? 'Saving to Firestore...' : 'Save Member Record & Send Email Invitation'}</span>
+                <span>{isSavingMember ? 'Saving to PostgreSQL...' : 'Save Member Record & Send Email Invitation'}</span>
               </button>
             </form>
 
             {/* Active Members Roster */}
             <div className="space-y-3">
-              <span className="text-xs font-bold uppercase tracking-wider text-[#1A1A1A] block">
-                Active Chamber Members Roster ({members.length})
-              </span>
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold uppercase tracking-wider text-[#1A1A1A] block">
+                  Active Chamber Members Roster ({members.length})
+                </span>
+                {loadingMembers && (
+                  <span className="text-[10px] font-mono text-[#B45309]">Syncing from PostgreSQL...</span>
+                )}
+              </div>
 
               <div className="divide-y border border-[#1A1A1A]">
                 {members.map(m => (
@@ -386,11 +430,30 @@ export const RoleManagerModal: React.FC<RoleManagerModalProps> = ({
                       <span className="text-[11px] font-mono text-[#555555] block">{m.email}</span>
                     </div>
 
-                    <div className="text-right">
-                      <span className="bg-[#1A1A1A] text-amber-300 font-mono text-[10px] font-bold px-2 py-1 uppercase tracking-wider inline-block">
-                        {m.role}
-                      </span>
-                      <span className="text-[9px] text-[#777777] block mt-0.5">Invited: {m.invitedAt}</span>
+                    <div className="text-right flex items-center gap-2">
+                      {chamberId ? (
+                        <select
+                          aria-label={`Role for ${m.email}`}
+                          value={m.role}
+                          onChange={(e) => handleUpdateMemberRole(m.id, e.target.value as ChamberRole)}
+                          className="bg-[#1A1A1A] text-amber-300 font-mono text-[10px] font-bold px-2 py-1 uppercase tracking-wider border border-[#1A1A1A]"
+                        >
+                          <option value="CHAMBER_OWNER">CHAMBER_OWNER</option>
+                          <option value="SENIOR_ADVOCATE">SENIOR_ADVOCATE</option>
+                          <option value="JUNIOR_ADVOCATE">JUNIOR_ADVOCATE</option>
+                          <option value="ASSOCIATE">ASSOCIATE</option>
+                          <option value="PARALEGAL">PARALEGAL</option>
+                          <option value="CLERK">CLERK</option>
+                          <option value="RECEPTIONIST">RECEPTIONIST</option>
+                          <option value="CLIENT">CLIENT</option>
+                          <option value="ADMINISTRATOR">ADMINISTRATOR</option>
+                        </select>
+                      ) : (
+                        <span className="bg-[#1A1A1A] text-amber-300 font-mono text-[10px] font-bold px-2 py-1 uppercase tracking-wider inline-block">
+                          {m.role}
+                        </span>
+                      )}
+                      <span className="text-[9px] text-[#777777] block">Invited: {m.invitedAt}</span>
                     </div>
                   </div>
                 ))}

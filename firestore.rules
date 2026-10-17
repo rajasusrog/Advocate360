@@ -39,9 +39,13 @@ service cloud.firestore {
     }
 
     // User Profile - Strict read/write to owned UID only
+    // Prevent ordinary users from escalating role or changing chamberId after creation
     match /users/{userId} {
       allow read: if isOwner(userId);
-      allow create, update: if isOwner(userId);
+      allow create: if isOwner(userId);
+      allow update: if isOwner(userId) && (
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'chamberId'])
+      );
       allow delete: if false;
     }
 
@@ -57,11 +61,16 @@ service cloud.firestore {
         allow create, update, delete: if isChamberOwner(chamberId);
       }
 
-      // Cases Subcollection
+      // Cases Subcollection & Nested Subcollections
       match /cases/{caseId} {
         allow read: if isMemberOfChamber(chamberId);
         allow create, update: if isMemberOfChamber(chamberId);
         allow delete: if isChamberSeniorOrOwner(chamberId);
+
+        match /{allSubcollections=**} {
+          allow read, create, update: if isMemberOfChamber(chamberId);
+          allow delete: if isChamberSeniorOrOwner(chamberId);
+        }
       }
 
       // Clients Subcollection

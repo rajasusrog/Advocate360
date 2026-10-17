@@ -17,14 +17,20 @@ interface NotificationCenterProps {
   isOpen: boolean;
   onClose: () => void;
   onNavigateTab: (tabId: string) => void;
+  notifications?: NotificationItem[];
+  onMarkAllRead?: () => void;
+  onMarkRead?: (id: string) => void;
 }
 
 export const NotificationCenter: React.FC<NotificationCenterProps> = ({
   isOpen,
   onClose,
-  onNavigateTab
+  onNavigateTab,
+  notifications: externalNotifications,
+  onMarkAllRead: externalMarkAllRead,
+  onMarkRead: externalMarkRead
 }) => {
-  const [notifications, setNotifications] = useState<NotificationItem[]>([
+  const [internalNotifications, setInternalNotifications] = useState<NotificationItem[]>([
     {
       id: 'n-1',
       category: 'hearing',
@@ -65,10 +71,16 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
     }
   ]);
 
+  const notifications = externalNotifications || internalNotifications;
+
   if (!isOpen) return null;
 
   const markAllAsRead = () => {
-    setNotifications(prev => prev.map(n => ({ ...n, isRead: true })));
+    if (externalMarkAllRead) {
+      externalMarkAllRead();
+    } else {
+      setInternalNotifications(prev => prev.map(n => ({ ...n, isRead: true })));
+    }
   };
 
   const getCategoryIcon = (category: string) => {

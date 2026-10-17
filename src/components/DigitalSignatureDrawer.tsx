@@ -4,47 +4,27 @@ import {
   ShieldCheck, 
   FileCheck, 
   Lock, 
-  CheckCircle2, 
-  Download, 
-  Key, 
-  Calendar, 
-  UserCheck 
+  AlertTriangle,
+  Info
 } from 'lucide-react';
-import { logAuditEvent } from '../lib/auditLogger';
 
 interface DigitalSignatureDrawerProps {
   isOpen: boolean;
   onClose: () => void;
   documentTitle?: string;
+  isDemoMode?: boolean;
 }
 
 export const DigitalSignatureDrawer: React.FC<DigitalSignatureDrawerProps> = ({
   isOpen,
   onClose,
-  documentTitle = 'Order_39_Injunction_Interlocutory_Petition.pdf'
+  documentTitle = 'Order_39_Injunction_Interlocutory_Petition.pdf',
+  isDemoMode = false
 }) => {
   const [signerName, setSignerName] = useState('Senior Advocate S. Jayakumar');
   const [enrollmentNo, setEnrollmentNo] = useState('MAH/4521/2005');
-  const [signaturePin, setSignaturePin] = useState('••••');
-  const [isSigned, setIsSigned] = useState(false);
-  const [certificateData, setCertificateData] = useState<any>(null);
 
   if (!isOpen) return null;
-
-  const handleApplyDigitalSignature = () => {
-    const cert = {
-      hash: 'SHA256: 8f9b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b',
-      timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19) + ' IST',
-      signer: signerName,
-      enrollmentNo,
-      verificationUrl: 'https://chamber.legal/verify/sig-994821',
-      certificateAuthority: 'Advocate360 Cryptographic Trust Authority (India)'
-    };
-
-    setCertificateData(cert);
-    setIsSigned(true);
-    logAuditEvent('PREPARATION_SIGN', `Applied Cryptographic Digital Signature to Document: ${documentTitle}`);
-  };
 
   return (
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
@@ -54,9 +34,9 @@ export const DigitalSignatureDrawer: React.FC<DigitalSignatureDrawerProps> = ({
         <div className="p-4 bg-[#1A1A1A] text-white flex items-center justify-between border-b border-[#1A1A1A]">
           <div className="flex items-center gap-2">
             <ShieldCheck className="w-5 h-5 text-amber-400" />
-            <span className="font-serif italic font-bold text-base">Digital Verification & Signature Engine</span>
+            <span className="font-serif italic font-bold text-base">Digital Signature Provider Integration</span>
           </div>
-          <button onClick={onClose} className="p-1 text-slate-300 hover:text-white transition-colors">
+          <button onClick={onClose} className="p-1 text-slate-300 hover:text-white transition-colors cursor-pointer">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -65,83 +45,63 @@ export const DigitalSignatureDrawer: React.FC<DigitalSignatureDrawerProps> = ({
         <div className="p-6 space-y-5 text-xs">
           
           <div className="p-3 bg-[#F5F2EF] border border-[#1A1A1A] space-y-1">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-[#555555]">Target Document for Verification:</span>
+            <span className="text-[10px] font-bold uppercase tracking-wider text-[#555555]">Target Document:</span>
             <p className="font-serif italic font-bold text-sm text-[#1A1A1A]">{documentTitle}</p>
           </div>
 
-          {!isSigned ? (
-            <div className="space-y-4">
-              <div>
-                <label className="font-bold text-[10px] uppercase tracking-wider text-[#555555] block mb-1">Signer Designated Advocate Name:</label>
-                <input
-                  type="text"
-                  value={signerName}
-                  onChange={(e) => setSignerName(e.target.value)}
-                  className="w-full p-2.5 bg-[#F9F7F5] border border-[#1A1A1A] font-serif text-xs focus:outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="font-bold text-[10px] uppercase tracking-wider text-[#555555] block mb-1">Bar Council Enrollment Number:</label>
-                <input
-                  type="text"
-                  value={enrollmentNo}
-                  onChange={(e) => setEnrollmentNo(e.target.value)}
-                  className="w-full p-2.5 bg-[#F9F7F5] border border-[#1A1A1A] font-mono text-xs focus:outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="font-bold text-[10px] uppercase tracking-wider text-[#555555] block mb-1">Chamber Cryptographic Security PIN:</label>
-                <input
-                  type="password"
-                  value={signaturePin}
-                  onChange={(e) => setSignaturePin(e.target.value)}
-                  className="w-full p-2.5 bg-[#F9F7F5] border border-[#1A1A1A] font-mono text-xs focus:outline-none"
-                />
-              </div>
-
-              <div className="p-3 bg-[#F9F7F5] border border-[#1A1A1A]/30 text-[11px] text-[#555555] space-y-1">
-                <span className="font-bold text-[#1A1A1A] block uppercase text-[10px]">Information Technology Act, 2000 Compliance:</span>
-                <p>Applying this signature embeds an immutable SHA-256 cryptographic digest into the petition header, verifying document integrity for High Court & Civil Sub-Court e-filing.</p>
-              </div>
-
-              <button
-                onClick={handleApplyDigitalSignature}
-                className="w-full py-3 bg-[#1A1A1A] text-amber-400 font-bold uppercase tracking-wider text-xs border border-[#1A1A1A] hover:bg-black transition-colors flex items-center justify-center gap-2"
-              >
-                <FileCheck className="w-4 h-4 text-amber-400" />
-                <span>Sign & Cryptographically Verify Document</span>
-              </button>
+          {/* Honest Feature State Badge */}
+          <div className="p-4 bg-amber-50 border-2 border-[#B45309] space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-[#B45309] text-white font-mono text-[10px] font-bold uppercase tracking-wider">
+                <AlertTriangle className="w-3 h-3" />
+                Status: Not Configured
+              </span>
+              <span className="text-[10px] font-mono text-slate-600">e-Sign Provider Required</span>
             </div>
-          ) : (
-            <div className="space-y-4 animate-in fade-in duration-200">
-              <div className="p-4 bg-emerald-900 text-white border-2 border-emerald-950 space-y-3">
-                <div className="flex items-center gap-2 text-emerald-300 font-bold uppercase text-[11px] tracking-wider">
-                  <CheckCircle2 className="w-5 h-5 text-emerald-400" />
-                  <span>Digital Signature Applied Successfully</span>
-                </div>
 
-                <div className="font-mono text-[11px] space-y-1.5 text-slate-200 pt-2 border-t border-emerald-800">
-                  <div><strong className="text-emerald-400">SHA-256 Digest:</strong> {certificateData.hash}</div>
-                  <div><strong className="text-emerald-400">Timestamp:</strong> {certificateData.timestamp}</div>
-                  <div><strong className="text-emerald-400">Signer:</strong> {certificateData.signer} ({certificateData.enrollmentNo})</div>
-                  <div><strong className="text-emerald-400">Trust Authority:</strong> {certificateData.certificateAuthority}</div>
-                </div>
-              </div>
+            <p className="text-xs leading-relaxed text-[#1A1A1A]">
+              Legally binding electronic signatures under the Information Technology Act 2000 require an external certified PKI / e-Sign provider (such as eMudhra, DocuSign, or Aadhaar eSign).
+            </p>
+          </div>
 
-              <button
-                onClick={() => {
-                  alert('Verification Certificate downloaded to local system.');
-                  onClose();
-                }}
-                className="w-full py-3 bg-[#1A1A1A] text-amber-400 font-bold uppercase tracking-wider text-xs border border-[#1A1A1A] hover:bg-black transition-colors flex items-center justify-center gap-2"
-              >
-                <Download className="w-4 h-4" />
-                <span>Download Signed Verification Certificate</span>
-              </button>
+          <div className="space-y-3">
+            <div>
+              <label className="font-bold text-[10px] uppercase tracking-wider text-[#555555] block mb-1">Signer Designated Advocate Name:</label>
+              <input
+                type="text"
+                value={signerName}
+                onChange={(e) => setSignerName(e.target.value)}
+                disabled
+                className="w-full p-2.5 bg-[#F5F2EF] border border-[#1A1A1A]/40 font-serif text-xs text-slate-600"
+              />
             </div>
-          )}
+
+            <div>
+              <label className="font-bold text-[10px] uppercase tracking-wider text-[#555555] block mb-1">Bar Council Enrollment Number:</label>
+              <input
+                type="text"
+                value={enrollmentNo}
+                onChange={(e) => setEnrollmentNo(e.target.value)}
+                disabled
+                className="w-full p-2.5 bg-[#F5F2EF] border border-[#1A1A1A]/40 font-mono text-xs text-slate-600"
+              />
+            </div>
+
+            <div className="p-3 bg-[#F9F7F5] border border-[#1A1A1A]/30 text-[11px] text-[#555555] flex items-start gap-2">
+              <Info className="w-4 h-4 text-[#B45309] shrink-0 mt-0.5" />
+              <p>
+                To enable live digital signatures for High Court and Civil Court e-filing, configure your chamber's e-Sign API credentials in <strong>Settings → Integrations</strong>.
+              </p>
+            </div>
+
+            <button
+              disabled
+              className="w-full py-3 bg-slate-300 text-slate-600 font-bold uppercase tracking-wider text-xs border border-slate-400 cursor-not-allowed flex items-center justify-center gap-2"
+            >
+              <Lock className="w-4 h-4" />
+              <span>Digital Signing Disabled (e-Sign Integration Pending)</span>
+            </button>
+          </div>
 
         </div>
 

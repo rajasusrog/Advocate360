@@ -8,7 +8,9 @@ import {
   ContradictionItem, 
   CalendarEvent, 
   PracticeTask,
-  FeeRecord
+  FeeRecord,
+  NotificationItem,
+  DeadlineAlert
 } from '../types';
 
 export const INITIAL_CASES: CaseFile[] = [
@@ -81,7 +83,55 @@ export const INITIAL_CASES: CaseFile[] = [
       disclaimer: 'AI-assisted assessment — advocate review required.'
     },
     createdAt: '2026-07-22',
-    updatedAt: '2026-07-29'
+    updatedAt: '2026-07-29',
+    lastActivityDate: '2026-07-29'
+  },
+  {
+    id: 'case-104',
+    title: 'K. Balan vs. City Municipal Corporation',
+    caseNumber: 'O.S. 88/2023',
+    caseType: 'Property Dispute',
+    status: 'Analysis',
+    clientName: 'K. Balan',
+    clientPhone: '+91 94441 23456',
+    clientEmail: 'balan.k@example.com',
+    oppositeParty: 'City Municipal Corporation',
+    courtName: 'City Civil Court, Hall 12',
+    judgeName: 'Hon. Justice P. Subramanian',
+    stage: 'Adjourned Sine Die / Dormant',
+    summary: 'Encroachment notice challenge for commercial godown in Guindy. No hearing or procedural pleadings filed for over 300 days.',
+    caseAssessment: {
+      overallAssessment: 'Mixed / Requires Review',
+      favourableFactors: ['Survey settlement deed on record'],
+      riskFactors: ['Revenue department demolition order issued'],
+      disclaimer: 'AI-assisted assessment — advocate review required.'
+    },
+    createdAt: '2023-04-10',
+    updatedAt: '2025-11-10',
+    lastActivityDate: '2025-11-10'
+  },
+  {
+    id: 'case-105',
+    title: 'National Traders vs. Orient Logistics Pvt Ltd',
+    caseNumber: 'Arb. Pet. 14/2024',
+    caseType: 'Contract & Recovery',
+    status: 'Closed',
+    clientName: 'National Traders (Director Ananth)',
+    clientPhone: '+91 98840 99881',
+    clientEmail: 'ananth@nationaltraders.in',
+    oppositeParty: 'Orient Logistics Pvt Ltd',
+    courtName: 'Madras High Court (Commercial)',
+    judgeName: 'Hon. Justice R. Narayanan',
+    stage: 'Arbitral Award Executed / Settled',
+    summary: 'Commercial cargo demurrage dispute settled out-of-court via mutual consent terms. Closed without active chamber filings.',
+    caseAssessment: {
+      overallAssessment: 'Strong Supporting Material',
+      favourableFactors: ['Signed consent settlement terms'],
+      disclaimer: 'AI-assisted assessment — advocate review required.'
+    },
+    createdAt: '2024-02-18',
+    updatedAt: '2026-01-15',
+    lastActivityDate: '2026-01-15'
   }
 ];
 
@@ -302,32 +352,118 @@ export const SAMPLE_TASKS: PracticeTask[] = [
   {
     id: 'task-1',
     caseId: 'case-101',
-    title: 'File Sec 65B Affidavit for WhatsApp chat evidence',
-    dueDate: '2026-08-02',
+    title: 'Extract Tahsildar Survey Demarcation Report',
+    dueDate: '2026-07-28',
     priority: 'High',
-    status: 'Pending',
+    status: 'Completed',
     category: 'Evidence Collection',
-    assignedTo: 'Junior Associate Ananya'
+    assignedTo: 'Court Clerk Murugan',
+    historicalDurationDays: 3
   },
   {
     id: 'task-2',
+    caseId: 'case-101',
+    title: 'File Sec 65B Certificate for WhatsApp chat evidence',
+    dueDate: '2026-08-01',
+    priority: 'High',
+    status: 'Completed',
+    category: 'Evidence Collection',
+    assignedTo: 'Junior Associate Ananya',
+    dependsOn: ['task-1'],
+    historicalDurationDays: 2
+  },
+  {
+    id: 'task-3',
     caseId: 'case-101',
     title: 'Draft Interim Injunction Petition against Star Builders',
     dueDate: '2026-08-03',
     priority: 'High',
     status: 'In Progress',
     category: 'Drafting',
-    assignedTo: 'Advocate Advocate360 AI'
+    assignedTo: 'Advocate Advocate360 AI',
+    dependsOn: ['task-2'],
+    historicalDurationDays: 4,
+    suggestedBufferDays: 3,
+    bufferAlertReason: 'Hearing is on Aug 5. Historical drafting takes 4 days; current deadline leaves no review window.'
   },
   {
-    id: 'task-3',
+    id: 'task-4',
+    caseId: 'case-101',
+    title: 'Senior Advocate Gate Review & Client Affidavit Sign',
+    dueDate: '2026-08-04',
+    priority: 'High',
+    status: 'Pending',
+    category: 'Hearing',
+    assignedTo: 'Senior Advocate Chambers',
+    dependsOn: ['task-3'],
+    historicalDurationDays: 1
+  },
+  {
+    id: 'task-5',
+    caseId: 'case-101',
+    title: 'Court Registry e-Filing & Service on Opposing Counsel',
+    dueDate: '2026-08-04',
+    priority: 'High',
+    status: 'Pending',
+    category: 'Hearing',
+    assignedTo: 'Court Clerk Murugan',
+    dependsOn: ['task-4'],
+    historicalDurationDays: 1
+  },
+  {
+    id: 'task-6',
     caseId: 'case-102',
     title: 'Obtain Certified Encumbrance Certificate from SRO Mylapore',
-    dueDate: '2026-08-04',
+    dueDate: '2026-08-06',
     priority: 'Medium',
     status: 'Pending',
     category: 'Client Follow-up',
-    assignedTo: 'Court Clerk Murugan'
+    assignedTo: 'Junior Associate Ananya',
+    historicalDurationDays: 5
+  },
+  {
+    id: 'task-7',
+    caseId: 'case-102',
+    title: 'Reconcile Software Timesheets for Summary Suit 118/2025',
+    dueDate: '2026-08-08',
+    priority: 'Medium',
+    status: 'Pending',
+    category: 'Evidence Collection',
+    assignedTo: 'Paralegal Ravi',
+    historicalDurationDays: 3
+  }
+];
+
+export const SAMPLE_DEADLINE_ALERTS: DeadlineAlert[] = [
+  {
+    id: 'alert-1',
+    taskId: 'task-3',
+    taskTitle: 'Draft Interim Injunction Petition against Star Builders',
+    relatedHearingId: 'cal-2',
+    relatedHearingTitle: 'Injunction Order & Issues',
+    relatedHearingDate: '2026-08-05',
+    severity: 'CRITICAL',
+    suggestedBufferDays: 3,
+    currentDeadline: '2026-08-03',
+    recommendedDeadline: '2026-07-31',
+    historicalDuration: '4 days average for Order 39 interim injunction petitions',
+    reasoning: 'Hearing fixture scheduled on 2026-08-05. Downstream tasks (Senior Review and Registry e-Filing) are blocked until this draft completes. Current deadline of Aug 03 leaves zero buffer for Registry defect rectification.',
+    suggestedAction: 'Advance drafting completion date to 2026-07-31 (+3 buffer days) to unblock Senior Review by Aug 01.'
+  },
+  {
+    id: 'alert-2',
+    taskId: 'task-6',
+    taskTitle: 'Obtain Certified Encumbrance Certificate from SRO Mylapore',
+    relatedHearingId: 'cal-3',
+    relatedHearingTitle: 'Admission & Notice (High Court)',
+    relatedHearingDate: '2026-08-12',
+    severity: 'MODERATE',
+    suggestedBufferDays: 2,
+    currentDeadline: '2026-08-06',
+    recommendedDeadline: '2026-08-04',
+    historicalDuration: 'SRO physical searches average 5 to 7 business days in Tamil Nadu Registration Department',
+    reasoning: 'Sub-Registrar office search processing delays commonly exceed 5 days. Securing the certificate before Aug 04 ensures counsel can index the document into the Court Judge bundle.',
+    suggestedAction: 'Advance search application deadline by 2 buffer days to prevent hearing day adjournment.'
   }
 ];
 
@@ -363,3 +499,57 @@ export const SAMPLE_FEES: FeeRecord[] = [
     status: 'Overdue'
   }
 ];
+
+export const SAMPLE_NOTIFICATIONS: NotificationItem[] = [
+  {
+    id: 'n-1',
+    category: 'hearing',
+    title: 'High Court Injunction Hearing Scheduled',
+    body: 'Order 39 injunction hearing in O.S. 402/2024 listed before Hall 18 at 10:30 AM.',
+    timestamp: '15 mins ago',
+    isRead: false,
+    linkTab: 'hearing',
+    severity: 'high'
+  },
+  {
+    id: 'n-2',
+    category: 'ai_alert',
+    title: 'Boundary Contradiction Detected',
+    body: 'Document Intelligence flagged 240 sq.ft variance between 1995 Title Deed and 2024 Revenue Patta.',
+    timestamp: '1 hour ago',
+    isRead: false,
+    linkTab: 'timeline',
+    severity: 'medium'
+  },
+  {
+    id: 'n-3',
+    category: 'deadline',
+    title: 'Limitation Expiry Notice (Art. 59)',
+    body: 'Statutory 3-year limitation to challenge 2021 registered settlement expires in 12 days. Rejoinder required.',
+    timestamp: '2 hours ago',
+    isRead: false,
+    linkTab: 'risk',
+    severity: 'high'
+  },
+  {
+    id: 'n-4',
+    category: 'client_msg',
+    title: 'Client Secure Portal Inquiry',
+    body: 'Client Rajesh (Apex Tech) submitted inquiry regarding draft recovery plaint verification.',
+    timestamp: '3 hours ago',
+    isRead: false,
+    linkTab: 'client',
+    severity: 'info'
+  },
+  {
+    id: 'n-5',
+    category: 'compliance',
+    title: 'Section 65B Certificate Required',
+    body: 'WhatsApp transcript records in State vs. Vikram Anand require advocate affidavit before court filing.',
+    timestamp: '5 hours ago',
+    isRead: true,
+    linkTab: 'repository',
+    severity: 'medium'
+  }
+];
+

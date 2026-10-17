@@ -1,13 +1,16 @@
-import {StrictMode} from 'react';
-import {createRoot} from 'react-dom/client';
+import { StrictMode } from 'react';
+import { createRoot } from 'react-dom/client';
+import { BrowserRouter } from 'react-router-dom';
 import App from './App.tsx';
 import './index.css';
 import { TranslationProvider } from './lib/multilingualEngine';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <TranslationProvider>
-      <App />
-    </TranslationProvider>
+    <BrowserRouter>
+      <TranslationProvider>
+        <App />
+      </TranslationProvider>
+    </BrowserRouter>
   </StrictMode>,
 );
