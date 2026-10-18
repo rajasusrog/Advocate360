@@ -409,54 +409,24 @@ export async function createMatterInDb(
     throw new Error('Matter title is required');
   }
 
-  let createdClientId: string | null = null;
-  if (newCase.clientName && newCase.clientName.trim()) {
-    const { data: clientData, error: clientError } = await client
-      .from('clients')
-      .insert({
-        workspace_id: workspaceId,
-        name: newCase.clientName.trim(),
-        email: newCase.clientEmail || null,
-        phone: newCase.clientPhone || null,
-      })
-      .select('id')
-      .single();
+  const { data, error } = await client.rpc('create_matter_with_client', {
+    p_workspace_id: workspaceId,
+    p_title: newCase.title.trim(),
+    p_client_name: newCase.clientName || null,
+    p_case_number: newCase.caseNumber || null,
+    p_case_type: newCase.caseType || 'Property Dispute',
+    p_status: newCase.status || newCase.stage || 'Intake',
+    p_client_phone: newCase.clientPhone || null,
+    p_client_email: newCase.clientEmail || null,
+    p_opposite_party: newCase.oppositeParty || null,
+    p_court_name: newCase.courtName || 'Court Not Specified',
+    p_judge_name: newCase.judgeName || null,
+    p_next_hearing_date: newCase.nextHearingDate || null,
+    p_summary: newCase.summary || ''
+  });
 
-    if (clientError) {
-      throw new Error(`Failed to create client record: ${clientError.message}`);
-    }
-    if (!clientData?.id) {
-      throw new Error('Failed to create client record: no client ID returned');
-    }
-    createdClientId = clientData.id;
-  }
-
-  const insertPayload = {
-    ...mapCaseFileToMatterRow(newCase, workspaceId),
-    ...(createdClientId ? { client_id: createdClientId } : {}),
-  };
-
-  const { data, error: matterError } = await client
-    .from('matters')
-    .insert(insertPayload)
-    .select('*')
-    .single();
-
-  if (matterError || !data) {
-    if (createdClientId) {
-      const { error: rollbackError } = await client
-        .from('clients')
-        .delete()
-        .eq('id', createdClientId)
-        .eq('workspace_id', workspaceId);
-      if (rollbackError) {
-        console.error(
-          '[createMatterInDb] Failed to roll back orphaned client row:',
-          rollbackError.message
-        );
-      }
-    }
-    throw new Error(matterError?.message || 'Failed to create matter in PostgreSQL');
+  if (error || !data) {
+    throw new Error(error?.message || 'Failed to create matter in PostgreSQL');
   }
 
   return mapMatterRowToCaseFile(data);
@@ -1432,7 +1402,7 @@ export async function deleteInvoiceInDb(
 export async function recordPaymentInDb(
   workspaceId: string,
   invoice: Invoice,
-  payment: Omit<InvoicePayment, 'id' | 'invoiceId'>,
+  payment: Omit<InvoicePayment, 'id' | 'invoiceId'> & { idempotencyKey?: string },
   cases: CaseFile[] = [],
   client: SupabaseClient = supabase
 ): Promise<Invoice> {
@@ -1444,61 +1414,32 @@ export async function recordPaymentInDb(
     throw new Error('Payment amount must be greater than zero');
   }
 
-  // 1. Insert payment row into `public.payments`
-  const { data: createdPay, error: payErr } = await client
-    .from('payments')
-    .insert({
-      workspace_id: workspaceId,
-      invoice_id: invoice.id,
-      amount: payAmount,
-      payment_date: payment.paymentDate || new Date().toISOString().split('T')[0],
-      payment_method: payment.paymentMethod || 'UPI',
-      reference_no: payment.referenceNo || null,
-      notes: payment.notes || null,
-    })
-    .select('*')
-    .single();
+  const idempotencyKey =
+    payment.idempotencyKey ||
+    `pay_${invoice.id}_${payment.paymentDate || 'date'}_${payAmount}_${payment.referenceNo || 'ref'}`;
 
-  if (payErr || !createdPay) {
-    throw new Error(payErr?.message || 'Failed to record payment in PostgreSQL');
+  const { data: updatedInvRow, error } = await client.rpc('record_payment_atomic', {
+    p_workspace_id: workspaceId,
+    p_invoice_id: invoice.id,
+    p_amount: payAmount,
+    p_payment_date: payment.paymentDate || new Date().toISOString().split('T')[0],
+    p_method: payment.paymentMethod || 'UPI',
+    p_reference_no: payment.referenceNo || null,
+    p_notes: payment.notes || null,
+    p_idempotency_key: idempotencyKey,
+  });
+
+  if (error || !updatedInvRow) {
+    throw new Error(error?.message || 'Failed to record payment in PostgreSQL');
   }
 
-  const updatedPaid = Number(invoice.paidAmount || 0) + payAmount;
-  const updatedBalance = Math.max(0, Number(invoice.totalAmount || 0) - updatedPaid);
-  const updatedStatus: Invoice['status'] = updatedBalance === 0 ? 'Paid' : 'Partially Paid';
-
-  // 2. Update parent invoice balance & status in `public.invoices`
-  const { data: updatedInv, error: invErr } = await client
-    .from('invoices')
-    .update({
-      paid_amount: updatedPaid,
-      balance_amount: updatedBalance,
-      status: updatedStatus,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('workspace_id', workspaceId)
-    .eq('id', invoice.id)
-    .select('*')
-    .single();
-
-  if (invErr || !updatedInv) {
-    // Compensating rollback of payment row if invoice update fails
-    await client.from('payments').delete().eq('id', createdPay.id).eq('workspace_id', workspaceId);
-    throw new Error(invErr?.message || 'Failed to update invoice balance after payment');
-  }
-
-  const { data: allPayRows, error: listPayErr } = await client
+  const { data: payRows } = await client
     .from('payments')
     .select('*')
     .eq('workspace_id', workspaceId)
-    .eq('invoice_id', invoice.id)
-    .order('payment_date', { ascending: true });
+    .eq('invoice_id', invoice.id);
 
-  if (listPayErr) {
-    throw new Error(listPayErr.message);
-  }
-
-  return mapInvoiceRowToInvoice(updatedInv, allPayRows || [createdPay], cases);
+  return mapInvoiceRowToInvoice(updatedInvRow, payRows || [], cases);
 }
 
 // ============================================================================

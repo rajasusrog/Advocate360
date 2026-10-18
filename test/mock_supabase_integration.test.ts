@@ -43,9 +43,10 @@ test('[Mock-Backed Integration Test] Static SQL Migration File Sequencing Verifi
     .sort();
 
   await t.test('should have unique, strictly sequential migration version prefixes', () => {
-    assert.ok(files.length >= 2, 'Expected at least 2 sequential migration files');
+    assert.ok(files.length >= 3, 'Expected at least 3 sequential migration files');
     assert.strictEqual(files[0], '20261016000001_initial_schema.sql');
     assert.strictEqual(files[1], '20261016000002_hardened_workspace_upgrade.sql');
+    assert.strictEqual(files[2], '20261017090500_persistence_defects.sql');
 
     const prefixes = files.map((f) => f.split('_')[0]);
     const uniquePrefixes = new Set(prefixes);
@@ -212,6 +213,158 @@ test('[Mock-Backed Integration Test] Simulated PostgREST Login-to-Matter & API A
           role: 'CHAMBER_OWNER',
         })
       );
+      return;
+    }
+
+    // 2B. RPC: POST /rest/v1/rpc/create_matter_with_client
+    if (pathname === '/rest/v1/rpc/create_matter_with_client' && req.method === 'POST') {
+      const body = await readJsonBody(req);
+      if (!isUserActiveMember(caller.id, body.p_workspace_id)) {
+        res.statusCode = 403;
+        res.end(JSON.stringify({ message: 'Access denied: caller is not active member' }));
+        return;
+      }
+
+      let createdClientId: string | null = null;
+      if (body.p_client_name && String(body.p_client_name).trim()) {
+        const clientRow = {
+          id: nextUuid(),
+          workspace_id: body.p_workspace_id,
+          name: String(body.p_client_name).trim(),
+          email: body.p_client_email || null,
+          phone: body.p_client_phone || null,
+          created_at: new Date().toISOString(),
+        };
+        simulatedState.clients.push(clientRow);
+        createdClientId = clientRow.id;
+      }
+
+      if (simulatedState.forceMatterInsertError) {
+        if (createdClientId) {
+          simulatedState.clients = simulatedState.clients.filter((c) => c.id !== createdClientId);
+        }
+        res.statusCode = 500;
+        res.end(
+          JSON.stringify({ message: 'Simulated matter insert failure after client creation' })
+        );
+        return;
+      }
+
+      const now = new Date().toISOString();
+      const matterRow = {
+        id: nextUuid(),
+        workspace_id: body.p_workspace_id,
+        client_id: createdClientId,
+        title: body.p_title,
+        case_number: body.p_case_number || null,
+        case_type: body.p_case_type || 'Property Dispute',
+        status: body.p_status || 'Intake',
+        stage: body.p_status || 'Intake',
+        client_name: body.p_client_name || '',
+        client_phone: body.p_client_phone || null,
+        client_email: body.p_client_email || null,
+        opposite_party: body.p_opposite_party || null,
+        court_name: body.p_court_name || 'Court Not Specified',
+        judge_name: body.p_judge_name || null,
+        next_hearing_date: body.p_next_hearing_date || null,
+        summary: body.p_summary || '',
+        created_at: now,
+        updated_at: now,
+      };
+      simulatedState.matters.push(matterRow);
+      res.statusCode = 200;
+      res.end(JSON.stringify(matterRow));
+      return;
+    }
+
+    // 2C. RPC: POST /rest/v1/rpc/record_payment_atomic
+    if (pathname === '/rest/v1/rpc/record_payment_atomic' && req.method === 'POST') {
+      const body = await readJsonBody(req);
+      if (!isUserActiveMember(caller.id, body.p_workspace_id)) {
+        res.statusCode = 403;
+        res.end(
+          JSON.stringify({
+            message: 'Unauthorized: Caller is not a billing authorized workspace member',
+          })
+        );
+        return;
+      }
+
+      const payAmount = Number(body.p_amount || 0);
+      if (payAmount <= 0) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ message: 'Payment amount must be greater than zero' }));
+        return;
+      }
+
+      if (body.p_idempotency_key) {
+        const existingPay = simulatedState.payments.find(
+          (p) =>
+            p.workspace_id === body.p_workspace_id && p.idempotency_key === body.p_idempotency_key
+        );
+        if (existingPay) {
+          if (
+            existingPay.invoice_id !== body.p_invoice_id ||
+            Number(existingPay.amount) !== payAmount
+          ) {
+            res.statusCode = 400;
+            res.end(
+              JSON.stringify({
+                message: 'Idempotency key collision with conflicting payment details',
+              })
+            );
+            return;
+          }
+          const inv = simulatedState.invoices.find(
+            (i) => i.id === body.p_invoice_id && i.workspace_id === body.p_workspace_id
+          );
+          res.statusCode = 200;
+          res.end(JSON.stringify(inv));
+          return;
+        }
+      }
+
+      const invIdx = simulatedState.invoices.findIndex(
+        (i) => i.id === body.p_invoice_id && i.workspace_id === body.p_workspace_id
+      );
+      if (invIdx === -1) {
+        res.statusCode = 404;
+        res.end(JSON.stringify({ message: 'Invoice not found or unauthorized' }));
+        return;
+      }
+
+      const payRow = {
+        id: nextUuid(),
+        workspace_id: body.p_workspace_id,
+        invoice_id: body.p_invoice_id,
+        amount: payAmount,
+        payment_date: body.p_payment_date,
+        payment_method: body.p_method || 'UPI',
+        reference_no: body.p_reference_no || null,
+        notes: body.p_notes || null,
+        idempotency_key: body.p_idempotency_key || null,
+        created_at: new Date().toISOString(),
+      };
+      simulatedState.payments.push(payRow);
+
+      const totalPaid = simulatedState.payments
+        .filter(
+          (p) => p.invoice_id === body.p_invoice_id && p.workspace_id === body.p_workspace_id
+        )
+        .reduce((sum, p) => sum + Number(p.amount), 0);
+
+      const inv = simulatedState.invoices[invIdx];
+      inv.paid_amount = totalPaid;
+      inv.status =
+        totalPaid >= Number(inv.total_amount)
+          ? 'Paid'
+          : totalPaid > 0
+            ? 'Partially Paid'
+            : 'Unpaid';
+      inv.updated_at = new Date().toISOString();
+
+      res.statusCode = 200;
+      res.end(JSON.stringify(inv));
       return;
     }
 

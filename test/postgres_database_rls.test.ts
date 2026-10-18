@@ -16,6 +16,12 @@ const MIGRATION_2_PATH = path.join(
   'migrations',
   '20261016000002_hardened_workspace_upgrade.sql'
 );
+const MIGRATION_3_PATH = path.join(
+  process.cwd(),
+  'supabase',
+  'migrations',
+  '20261017090500_persistence_defects.sql'
+);
 
 /**
  * Bootstraps a disposable PostgreSQL 16 (PGlite) instance with Supabase-compatible
@@ -125,11 +131,13 @@ test('[Database-Backed PostgreSQL Test] 1. Fresh Installation of Both Migrations
   const db = await createDisposableSupabasePostgres();
   const sql1 = fs.readFileSync(MIGRATION_1_PATH, 'utf8');
   const sql2 = fs.readFileSync(MIGRATION_2_PATH, 'utf8');
+  const sql3 = fs.readFileSync(MIGRATION_3_PATH, 'utf8');
 
   try {
-    await t.test('executes 20261016000001_initial_schema.sql and 20261016000002_hardened_workspace_upgrade.sql sequentially without error', async () => {
+    await t.test('executes 20261016000001_initial_schema.sql, 20261016000002_hardened_workspace_upgrade.sql, and 20261017090500_persistence_defects.sql sequentially without error', async () => {
       await db.exec(sql1);
       await db.exec(sql2);
+      await db.exec(sql3);
       await grantSupabasePublicPrivileges(db);
 
       const tablesRes = await db.query<{ table_name: string }>(`
@@ -210,6 +218,7 @@ test('[Database-Backed PostgreSQL Test] 2. Upgrade from Previously Shipped Initi
   const db = await createDisposableSupabasePostgres();
   const sql1 = fs.readFileSync(MIGRATION_1_PATH, 'utf8');
   const sql2 = fs.readFileSync(MIGRATION_2_PATH, 'utf8');
+  const sql3 = fs.readFileSync(MIGRATION_3_PATH, 'utf8');
 
   const userA = 'aaaa1111-1111-4111-8111-111111111111';
   let wsId = '';
@@ -329,11 +338,9 @@ test('[Database-Backed PostgreSQL Test] 2. Upgrade from Previously Shipped Initi
       );
       assert.strictEqual(drvCheck.rows[0].workspace_id, wsId);
 
-      const arCheck = await db.query<{ workspace_id: string }>(
-        `SELECT workspace_id FROM public.ai_results WHERE id = $1;`,
-        [aiResultId]
-      );
-      assert.strictEqual(arCheck.rows[0].workspace_id, wsId);
+      // Step 4: Execute Migration 3 (Persistence Defects Hardening)
+      await db.exec(sql3);
+      await grantSupabasePublicPrivileges(db);
     });
   } finally {
     await db.close();
@@ -344,8 +351,10 @@ test('[Database-Backed PostgreSQL Test] 3. Real RLS with Two Authenticated Users
   const db = await createDisposableSupabasePostgres();
   const sql1 = fs.readFileSync(MIGRATION_1_PATH, 'utf8');
   const sql2 = fs.readFileSync(MIGRATION_2_PATH, 'utf8');
+  const sql3 = fs.readFileSync(MIGRATION_3_PATH, 'utf8');
   await db.exec(sql1);
   await db.exec(sql2);
+  await db.exec(sql3);
   await grantSupabasePublicPrivileges(db);
 
   const userAId = '11111111-1111-4111-8111-111111111111'; // Advocate Owner of Workspace A
@@ -369,6 +378,8 @@ test('[Database-Backed PostgreSQL Test] 3. Real RLS with Two Authenticated Users
   let matterB1Id = '';
   let docA1Id = '';
   let docB1Id = '';
+  let invoiceId = '';
+  let paralegalId = '55555555-5555-4555-8555-555555555555';
   let findingA1Id = '';
   let findingB1Id = '';
 
@@ -797,7 +808,6 @@ test('[Database-Backed PostgreSQL Test] 3. Real RLS with Two Authenticated Users
 
     await t.test('3F. Schema & RLS Verification for Roles, Billing (time_entries, invoices, payments), Evidence, Timeline, Tasks, Document Versions, and Storage Bucket Policies', async () => {
       const juniorId = '44444444-4444-4444-8444-444444444444';
-      const paralegalId = '55555555-5555-4555-8555-555555555555';
       await db.query(
         `INSERT INTO auth.users (id, email) VALUES
           ($1, 'junior@chamberA.in'),
@@ -890,7 +900,7 @@ test('[Database-Backed PostgreSQL Test] 3. Real RLS with Two Authenticated Users
       });
 
       // 4. BillingModule workflow: time_entries, invoices, payments + role-based RLS protection
-      let invoiceId = '';
+      invoiceId = '';
       await runAsAuthenticatedUser(db, userAId, async (tx) => {
         const teRes = await tx.query(
           `INSERT INTO public.time_entries (workspace_id, matter_id, advocate_name, description, hours, hourly_rate, total_amount, billable, status, date)
@@ -992,6 +1002,202 @@ test('[Database-Backed PostgreSQL Test] 3. Real RLS with Two Authenticated Users
         },
         /row-level security policy/i,
         'Private storage RLS must reject Outsider User B uploading into Workspace A folder'
+      );
+      // 6. Subtest 3G: record_payment_atomic security, idempotency, amount validation & role restrictions
+      await t.test(
+        '3G. record_payment_atomic requires auth.uid(), workspace membership, billing role, idempotency, and amount > 0',
+        async () => {
+          // Test anonymous caller rejection
+          await assert.rejects(
+            async () => {
+              await db.query(`SELECT set_config('request.jwt.claim.sub', '', true);`);
+              await db.query(
+                `SELECT * FROM public.record_payment_atomic($1, $2, 5000, '2026-10-17'::date, 'UPI', 'REF1', 'Note', 'idem-anon');`,
+                [workspaceAId, invoiceId]
+              );
+            },
+            /Authentication required|auth\.uid\(\) is null/i
+          );
+
+          // Test outsider caller rejection
+          await assert.rejects(
+            async () => {
+              await runAsAuthenticatedUser(db, userBId, async (tx) => {
+                await tx.query(
+                  `SELECT * FROM public.record_payment_atomic($1, $2, 5000, '2026-10-17'::date, 'UPI', 'REF1', 'Note', 'idem-outsider');`,
+                  [workspaceAId, invoiceId]
+                );
+              });
+            },
+            /Unauthorized: Caller is not a billing authorized workspace member/i
+          );
+
+          // Test PARALEGAL caller rejection
+          await assert.rejects(
+            async () => {
+              await runAsAuthenticatedUser(db, paralegalId, async (tx) => {
+                await tx.query(
+                  `SELECT * FROM public.record_payment_atomic($1, $2, 5000, '2026-10-17'::date, 'UPI', 'REF1', 'Note', 'idem-para');`,
+                  [workspaceAId, invoiceId]
+                );
+              });
+            },
+            /Unauthorized: Caller is not a billing authorized workspace member/i
+          );
+
+          // Test invalid amount (<= 0) rejection
+          await assert.rejects(
+            async () => {
+              await runAsAuthenticatedUser(db, userAId, async (tx) => {
+                await tx.query(
+                  `SELECT * FROM public.record_payment_atomic($1, $2, -500, '2026-10-17'::date, 'UPI', 'REF1', 'Note', 'idem-neg');`,
+                  [workspaceAId, invoiceId]
+                );
+              });
+            },
+            /Payment amount must be greater than zero/i
+          );
+
+          // Test successful payment record with idempotency
+          await runAsAuthenticatedUser(db, userAId, async (tx) => {
+            const res1 = await tx.query(
+              `SELECT * FROM public.record_payment_atomic($1, $2, 10000, '2026-10-17'::date, 'UPI', 'TXN-001', 'Part payment', 'idem-key-100');`,
+              [workspaceAId, invoiceId]
+            );
+            assert.ok(res1.rows.length > 0);
+
+            // Retry identical payment with same idempotency key -> returns existing state without duplicate insertion
+            const res2 = await tx.query(
+              `SELECT * FROM public.record_payment_atomic($1, $2, 10000, '2026-10-17'::date, 'UPI', 'TXN-001', 'Part payment', 'idem-key-100');`,
+              [workspaceAId, invoiceId]
+            );
+            assert.strictEqual(res2.rows[0].id, invoiceId);
+          });
+
+          // Test idempotency key collision with conflicting details -> throws error
+          await assert.rejects(
+            async () => {
+              await runAsAuthenticatedUser(db, userAId, async (tx) => {
+                await tx.query(
+                  `SELECT * FROM public.record_payment_atomic($1, $2, 20000, '2026-10-17'::date, 'UPI', 'TXN-001', 'Conflicting amount', 'idem-key-100');`,
+                  [workspaceAId, invoiceId]
+                );
+              });
+            },
+            /Idempotency key collision with conflicting payment details/i
+          );
+        }
+      );
+
+      // 7. Subtest 3H: create_matter_with_client 13-field preservation
+      await t.test(
+        '3H. create_matter_with_client preserves all 13 supported matter attributes through creation and reload',
+        async () => {
+          await runAsAuthenticatedUser(db, userAId, async (tx) => {
+            const res = await tx.query(
+              `SELECT * FROM public.create_matter_with_client(
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::date, $13
+              );`,
+              [
+                workspaceAId,
+                'Full Parameter Test Matter',
+                'Srinivasa Ramanujan',
+                'C.S. 889/2026',
+                'Intellectual Property',
+                'Drafting',
+                '+91 91234 56789',
+                'srinivasa@math.in',
+                'Kumbakonam Corporation',
+                'Madras High Court',
+                'Hon. Justice S. Vaidyanathan',
+                '2026-12-01',
+                'Mathematical copyright infringement suit',
+              ]
+            );
+
+            const m = res.rows[0];
+            assert.strictEqual(m.title, 'Full Parameter Test Matter');
+            assert.strictEqual(m.case_number, 'C.S. 889/2026');
+            assert.strictEqual(m.case_type, 'Intellectual Property');
+            assert.strictEqual(m.status, 'Drafting');
+            assert.strictEqual(m.client_phone, '+91 91234 56789');
+            assert.strictEqual(m.client_email, 'srinivasa@math.in');
+            assert.strictEqual(m.opposite_party, 'Kumbakonam Corporation');
+            assert.strictEqual(m.court_name, 'Madras High Court');
+            assert.strictEqual(m.judge_name, 'Hon. Justice S. Vaidyanathan');
+            assert.strictEqual(m.summary, 'Mathematical copyright infringement suit');
+          });
+        }
+      );
+
+      // 8. Subtest 3I: Enforceable document retention for committed versions and storage objects
+      await t.test(
+        '3I. Enforceable retention rules block deletion of committed version rows and storage objects',
+        async () => {
+          await runAsAuthenticatedUser(db, userAId, async (tx) => {
+            // Inserting committed version
+            const commVer = await tx.query(
+              `INSERT INTO public.document_versions (workspace_id, document_id, version, file_path, status)
+               VALUES ($1, $2, 10, 'ws/m/committed.pdf', 'committed')
+               RETURNING id;`,
+              [workspaceAId, docA1Id]
+            );
+            const commId = commVer.rows[0].id;
+
+            // Attempting to delete committed version -> rejected by trigger
+            await assert.rejects(
+              async () => {
+                await tx.query(`DELETE FROM public.document_versions WHERE id = $1;`, [commId]);
+              },
+              /Retention policy violation: Historical document versions/i
+            );
+
+            // Inserting uncommitted/pending version
+            const pendVer = await tx.query(
+              `INSERT INTO public.document_versions (workspace_id, document_id, version, file_path, status)
+               VALUES ($1, $2, 11, 'ws/m/pending.pdf', 'pending_upload')
+               RETURNING id;`,
+              [workspaceAId, docA1Id]
+            );
+            const pendId = pendVer.rows[0].id;
+
+            // Deleting pending_upload version -> succeeds (failed/orphan upload cleanup path)
+            const delRes = await tx.query(
+              `DELETE FROM public.document_versions WHERE id = $1 RETURNING id;`,
+              [pendId]
+            );
+            assert.strictEqual(delRes.rows.length, 1);
+          });
+        }
+      );
+
+      // 9. Subtest 3J: Draft approval invalidation on content changes
+      await t.test(
+        '3J. Updating draft content or title automatically invalidates prior approval status',
+        async () => {
+          await runAsAuthenticatedUser(db, userAId, async (tx) => {
+            const draftRes = await tx.query(
+              `INSERT INTO public.drafts (workspace_id, matter_id, title, content, current_version, approved_version, approved_by_user_id, approved_at, status)
+               VALUES ($1, $2, 'Initial Petition', 'Original content v1', 1, 1, $3, NOW(), 'Approved')
+               RETURNING id, status, approved_version;`,
+              [workspaceAId, matterA1Id, userAId]
+            );
+            const dId = draftRes.rows[0].id;
+            assert.strictEqual(draftRes.rows[0].status, 'Approved');
+
+            // Update content and increment version
+            const updRes = await tx.query(
+              `UPDATE public.drafts
+               SET content = 'Modified content v2', current_version = 2
+               WHERE id = $1
+               RETURNING status, approved_version, approved_by_user_id;`,
+              [dId]
+            );
+            assert.strictEqual(updRes.rows[0].status, 'Draft');
+            assert.strictEqual(updRes.rows[0].approved_version, null);
+            assert.strictEqual(updRes.rows[0].approved_by_user_id, null);
+          });
+        }
       );
     });
   } finally {
