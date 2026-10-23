@@ -22,6 +22,12 @@ const MIGRATION_3_PATH = path.join(
   'migrations',
   '20261017090500_persistence_defects.sql'
 );
+const MIGRATION_4_PATH = path.join(
+  process.cwd(),
+  'supabase',
+  'migrations',
+  '20261018000001_corrective_persistence_upgrade.sql'
+);
 
 /**
  * Bootstraps a disposable PostgreSQL 16 (PGlite) instance with Supabase-compatible
@@ -132,12 +138,14 @@ test('[Database-Backed PostgreSQL Test] 1. Fresh Installation of Both Migrations
   const sql1 = fs.readFileSync(MIGRATION_1_PATH, 'utf8');
   const sql2 = fs.readFileSync(MIGRATION_2_PATH, 'utf8');
   const sql3 = fs.readFileSync(MIGRATION_3_PATH, 'utf8');
+  const sql4 = fs.readFileSync(MIGRATION_4_PATH, 'utf8');
 
   try {
-    await t.test('executes 20261016000001_initial_schema.sql, 20261016000002_hardened_workspace_upgrade.sql, and 20261017090500_persistence_defects.sql sequentially without error', async () => {
+    await t.test('executes all shipped migrations sequentially without error', async () => {
       await db.exec(sql1);
       await db.exec(sql2);
       await db.exec(sql3);
+      await db.exec(sql4);
       await grantSupabasePublicPrivileges(db);
 
       const tablesRes = await db.query<{ table_name: string }>(`
@@ -219,6 +227,7 @@ test('[Database-Backed PostgreSQL Test] 2. Upgrade from Previously Shipped Initi
   const sql1 = fs.readFileSync(MIGRATION_1_PATH, 'utf8');
   const sql2 = fs.readFileSync(MIGRATION_2_PATH, 'utf8');
   const sql3 = fs.readFileSync(MIGRATION_3_PATH, 'utf8');
+  const sql4 = fs.readFileSync(MIGRATION_4_PATH, 'utf8');
 
   const userA = 'aaaa1111-1111-4111-8111-111111111111';
   let wsId = '';
@@ -338,8 +347,9 @@ test('[Database-Backed PostgreSQL Test] 2. Upgrade from Previously Shipped Initi
       );
       assert.strictEqual(drvCheck.rows[0].workspace_id, wsId);
 
-      // Step 4: Execute Migration 3 (Persistence Defects Hardening)
+      // Step 4: Execute Migration 3 and Migration 4 (Corrective Persistence Upgrade)
       await db.exec(sql3);
+      await db.exec(sql4);
       await grantSupabasePublicPrivileges(db);
     });
   } finally {
@@ -352,9 +362,11 @@ test('[Database-Backed PostgreSQL Test] 3. Real RLS with Two Authenticated Users
   const sql1 = fs.readFileSync(MIGRATION_1_PATH, 'utf8');
   const sql2 = fs.readFileSync(MIGRATION_2_PATH, 'utf8');
   const sql3 = fs.readFileSync(MIGRATION_3_PATH, 'utf8');
+  const sql4 = fs.readFileSync(MIGRATION_4_PATH, 'utf8');
   await db.exec(sql1);
   await db.exec(sql2);
   await db.exec(sql3);
+  await db.exec(sql4);
   await grantSupabasePublicPrivileges(db);
 
   const userAId = '11111111-1111-4111-8111-111111111111'; // Advocate Owner of Workspace A
@@ -1072,6 +1084,53 @@ test('[Database-Backed PostgreSQL Test] 3. Real RLS with Two Authenticated Users
               [workspaceAId, invoiceId]
             );
             assert.strictEqual(res2.rows[0].id, invoiceId);
+          });
+
+          // Test specific requirement: invoice total 100 with payment 10 -> paid must be 10 and balance 90
+          await runAsAuthenticatedUser(db, userAId, async (tx) => {
+            const inv100Res = await tx.query(
+              `INSERT INTO public.invoices (workspace_id, matter_id, invoice_number, client_name, subtotal, total_amount, paid_amount, status, due_date)
+               VALUES ($1, $2, 'INV-EXACT-100', 'Test Client 100', 100, 100, 0, 'Unpaid', '2026-11-30')
+               RETURNING id;`,
+              [workspaceAId, matterA1Id]
+            );
+            const inv100Id = inv100Res.rows[0].id;
+
+            const pay10Res = await tx.query(
+              `SELECT * FROM public.record_payment_atomic($1, $2, 10, '2026-10-18'::date, 'UPI', 'REF-10', 'Partial 10', 'idem-100-10');`,
+              [workspaceAId, inv100Id]
+            );
+            const updatedInv = pay10Res.rows[0];
+            assert.strictEqual(Number(updatedInv.paid_amount), 10);
+            assert.strictEqual(Number(updatedInv.balance_amount), 90);
+            assert.strictEqual(updatedInv.status, 'Partially Paid');
+          });
+
+          // Test separate payments with identical date, amount, and reference both persisting when unique idempotency keys are used
+          await runAsAuthenticatedUser(db, userAId, async (tx) => {
+            const invSepRes = await tx.query(
+              `INSERT INTO public.invoices (workspace_id, matter_id, invoice_number, client_name, subtotal, total_amount, paid_amount, status, due_date)
+               VALUES ($1, $2, 'INV-SEP-PAY', 'Separate Payments Client', 500, 500, 0, 'Unpaid', '2026-11-30')
+               RETURNING id;`,
+              [workspaceAId, matterA1Id]
+            );
+            const invSepId = invSepRes.rows[0].id;
+
+            const p1 = await tx.query(
+              `SELECT * FROM public.record_payment_atomic($1, $2, 100, '2026-10-18'::date, 'UPI', 'REF-SAME', 'Payment 1', 'idem-key-sep-1');`,
+              [workspaceAId, invSepId]
+            );
+            const p2 = await tx.query(
+              `SELECT * FROM public.record_payment_atomic($1, $2, 100, '2026-10-18'::date, 'UPI', 'REF-SAME', 'Payment 2', 'idem-key-sep-2');`,
+              [workspaceAId, invSepId]
+            );
+            assert.strictEqual(Number(p2.rows[0].paid_amount), 200);
+
+            const countRes = await tx.query(
+              `SELECT COUNT(*) AS cnt FROM public.payments WHERE invoice_id = $1;`,
+              [invSepId]
+            );
+            assert.strictEqual(Number(countRes.rows[0].cnt), 2, 'Two separate payments with identical details must both persist');
           });
 
           // Test idempotency key collision with conflicting details -> throws error
