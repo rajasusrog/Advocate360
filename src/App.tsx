@@ -5,6 +5,8 @@ import {
   signInWithGoogle,
   signOut as supabaseSignOut,
   isSupabaseConfigured,
+  peekPendingPortalInviteToken,
+  savePendingPortalInviteToken,
 } from './lib/supabase';
 import {
   createWorkspaceWithOwner,
@@ -15,6 +17,7 @@ import {
   listTasksForWorkspace,
   createTaskInDb,
   updateTaskInDb,
+  listActiveClientGrantsForUser,
 } from './lib/useMatterData';
 
 // Core UI Components
@@ -23,7 +26,7 @@ import { SidebarNav } from './components/SidebarNav';
 import { LandingPage } from './components/LandingPage';
 import { PracticeSetupModal } from './components/PracticeSetupModal';
 import { PracticeDashboard } from './components/PracticeDashboard';
-import { ClientPortal } from './components/ClientPortal';
+import { ClientPortal, RestrictedClientPortal } from './components/ClientPortal';
 import { DocumentRepository } from './components/DocumentRepository';
 import { BillingModule } from './components/BillingModule';
 import { ExecutiveAnalytics } from './components/ExecutiveAnalytics';
@@ -144,12 +147,18 @@ export default function App() {
     const mappedUser = mapSupabaseUser(sbUser);
     setUser(mappedUser);
     try {
+      const pendingToken = peekPendingPortalInviteToken();
+      const isPortalRoute =
+        typeof window !== 'undefined' &&
+        (window.location.pathname.startsWith('/portal/redeem') ||
+          window.location.pathname.startsWith('/portal/access'));
+
       const { chamber: activeChamber, role, profile } = await fetchUserWorkspaceMembership(
         sbUser.id,
         sbUser.email || ''
       );
 
-      if (activeChamber) {
+      if (activeChamber && role !== 'CLIENT') {
         setChamber(activeChamber);
         setOfficialRole(role);
         setUserProfile(profile);
@@ -168,11 +177,27 @@ export default function App() {
             prev && loadedMatters.some((c) => c.id === prev) ? prev : loadedMatters[0].id
           );
         }
-      } else {
-        setChamber(null);
+      } else if (role === 'CLIENT' || pendingToken || isPortalRoute) {
+        setChamber(activeChamber || null);
+        setOfficialRole('CLIENT');
+        setUserProfile(profile || null);
         setCases([]);
         setSelectedCaseId('');
-        setIsSettingUpPractice(true);
+        setIsSettingUpPractice(false);
+      } else {
+        const clientGrants = await listActiveClientGrantsForUser().catch(() => []);
+        if (clientGrants.length > 0) {
+          setChamber(null);
+          setOfficialRole('CLIENT');
+          setCases([]);
+          setSelectedCaseId('');
+          setIsSettingUpPractice(false);
+        } else {
+          setChamber(null);
+          setCases([]);
+          setSelectedCaseId('');
+          setIsSettingUpPractice(true);
+        }
       }
     } catch (err: any) {
       console.error('Error hydrating Supabase workspace profile:', err);
@@ -188,6 +213,17 @@ export default function App() {
 
     const initializeAuth = async () => {
       try {
+        // Capture any invitation token present on /portal/redeem or /portal/access before OAuth redirect
+        if (
+          window.location.pathname.startsWith('/portal/redeem') ||
+          window.location.pathname.startsWith('/portal/access')
+        ) {
+          const urlToken = new URLSearchParams(window.location.search).get('token');
+          if (urlToken) {
+            savePendingPortalInviteToken(urlToken);
+          }
+        }
+
         // Handle OAuth PKCE code callback on /auth/callback
         if (window.location.pathname === '/auth/callback') {
           const params = new URLSearchParams(window.location.search);
@@ -211,7 +247,14 @@ export default function App() {
             }
             if (data.session?.user && isMounted) {
               await hydrateUserWorkspace(data.session.user);
-              navigate('/app/today', { replace: true });
+              const pendingToken = peekPendingPortalInviteToken();
+              if (pendingToken) {
+                navigate(`/portal/redeem?token=${encodeURIComponent(pendingToken)}`, {
+                  replace: true,
+                });
+              } else {
+                navigate('/app/today', { replace: true });
+              }
               return;
             }
           }
@@ -231,7 +274,14 @@ export default function App() {
         if (session?.user) {
           await hydrateUserWorkspace(session.user);
           if (window.location.pathname === '/auth/callback') {
-            navigate('/app/today', { replace: true });
+            const pendingToken = peekPendingPortalInviteToken();
+            if (pendingToken) {
+              navigate(`/portal/redeem?token=${encodeURIComponent(pendingToken)}`, {
+                replace: true,
+              });
+            } else {
+              navigate('/app/today', { replace: true });
+            }
           }
         } else {
           clearWorkspaceState();
@@ -668,6 +718,20 @@ export default function App() {
     );
   }
 
+  const isClientPortalRoute =
+    location.pathname.startsWith('/portal/redeem') ||
+    location.pathname.startsWith('/portal/access');
+
+  // 1b. Dedicated Restricted Client Portal & Invitation Redemption Route (/portal/redeem & /portal/access)
+  if (isClientPortalRoute || (user && officialRole === 'CLIENT')) {
+    return (
+      <RestrictedClientPortal
+        currentUserId={user?.id || null}
+        currentUserEmail={user?.email || null}
+      />
+    );
+  }
+
   // 2. Unauthenticated User -> Public Landing Page & OAuth Callback Route (Protected Routes Redirect to /)
   if (!user) {
     return (
@@ -689,6 +753,14 @@ export default function App() {
             element={
               <LandingPage onGoogleSignIn={handleGoogleSignIn} isLoadingAuth={authLoading} />
             }
+          />
+          <Route
+            path="/portal/redeem"
+            element={<RestrictedClientPortal currentUserId={null} currentUserEmail={null} />}
+          />
+          <Route
+            path="/portal/access"
+            element={<RestrictedClientPortal currentUserId={null} currentUserEmail={null} />}
           />
           <Route
             path="/auth/callback"
@@ -866,9 +938,9 @@ export default function App() {
                 element={
                   <ClientPortal
                     cases={cases}
-                    selectedCaseId={selectedCaseId}
-                    setSelectedCaseId={setSelectedCaseId}
-                    chamber={chamber}
+                    chamberId={chamber?.id}
+                    isDemoMode={isDemoMode}
+                    userRole={currentRole}
                   />
                 }
               />

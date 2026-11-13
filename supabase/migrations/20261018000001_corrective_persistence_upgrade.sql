@@ -90,7 +90,17 @@ BEGIN
       p_idempotency_key
     );
   EXCEPTION WHEN unique_violation THEN
-    -- Concurrent retry caught by unique index: fetch and return current state
+    -- Concurrent retry caught by unique index: fetch existing payment and validate payload
+    SELECT * INTO v_existing_payment
+    FROM public.payments
+    WHERE workspace_id = p_workspace_id AND idempotency_key = p_idempotency_key;
+
+    IF FOUND THEN
+      IF v_existing_payment.invoice_id <> p_invoice_id OR v_existing_payment.amount <> p_amount THEN
+        RAISE EXCEPTION 'Idempotency key collision with conflicting payment details';
+      END IF;
+    END IF;
+
     SELECT * INTO v_invoice FROM public.invoices WHERE id = p_invoice_id AND workspace_id = p_workspace_id;
     RETURN v_invoice;
   END;

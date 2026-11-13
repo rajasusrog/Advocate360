@@ -212,7 +212,7 @@ export const ExecutiveAnalytics: React.FC<ExecutiveAnalyticsProps> = ({ cases, f
             className="w-full py-2.5 bg-[#1A1A1A] text-amber-400 font-bold uppercase tracking-wider text-xs border border-[#1A1A1A] hover:bg-black transition-colors flex items-center justify-center gap-2"
           >
             <RefreshCw className={`w-4 h-4 ${isBackupRunning ? 'animate-spin' : ''}`} />
-            <span>{isBackupRunning ? 'Snapshotting Firestore & Storage...' : 'Initiate Point-in-Time Backup Snapshot'}</span>
+            <span>{isBackupRunning ? 'Snapshotting PostgreSQL & Storage...' : 'Initiate Point-in-Time Backup Snapshot'}</span>
           </button>
         </div>
 

@@ -1,52 +1,36 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { 
   Activity, 
   Server, 
   Cpu, 
-  HardDrive, 
   ShieldCheck, 
-  AlertTriangle, 
-  Clock, 
   Zap, 
   Database, 
-  CheckCircle2, 
   RefreshCw, 
-  BarChart2, 
-  Key, 
-  Lock,
   Layers,
-  Radio,
-  FileText
+  AlertTriangle,
+  RotateCcw
 } from 'lucide-react';
-import { jobEngine, BackgroundJob } from '../lib/backgroundJobs';
-import { eventBus } from '../lib/eventBus';
+import { useDurableJobs } from '../lib/useDurableJobs';
 import { logAuditEvent } from '../lib/auditLogger';
 
 export const OpsHealthDashboard: React.FC = () => {
-  const [jobs, setJobs] = useState<BackgroundJob[]>(jobEngine.getJobs());
+  const { jobs, activeJobs, completedJobs, failedJobs, isLoading, retry, refresh } = useDurableJobs();
   const [cpuUsage, setCpuUsage] = useState<number>(18);
   const [ramUsage, setRamUsage] = useState<number>(42);
   const [aiP95Latency, setAiP95Latency] = useState<number>(340);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
 
-  useEffect(() => {
-    const unsub = jobEngine.subscribe(updated => setJobs(updated));
-    return () => unsub();
-  }, []);
-
   const handleManualMetricsRefresh = () => {
     setIsRefreshing(true);
-    setTimeout(() => {
+    refresh().finally(() => {
       setCpuUsage(Math.floor(12 + Math.random() * 15));
       setRamUsage(Math.floor(38 + Math.random() * 8));
       setAiP95Latency(Math.floor(290 + Math.random() * 80));
       setIsRefreshing(false);
       logAuditEvent('DOCUMENT_VIEW', 'Refreshed Production Infrastructure Operations Telemetry Dashboard');
-    }, 800);
+    });
   };
-
-  const activeJobs = jobs.filter(j => j.status === 'processing' || j.status === 'queued');
-  const completedJobs = jobs.filter(j => j.status === 'completed');
 
   return (
     <div className="space-y-6 text-[#1A1A1A]">
@@ -61,16 +45,16 @@ export const OpsHealthDashboard: React.FC = () => {
             </div>
             <h1 className="font-serif text-3xl font-light italic text-[#1A1A1A]">System Health, Queue & AI Telemetry</h1>
             <p className="text-xs text-[#555555] mt-1 max-w-2xl">
-              Live production monitoring: asynchronous background job queues, AI inference P95 latencies, container resource metrics, security alerts, and vector database index health.
+              Live production monitoring: durable database job queues, AI inference P95 latencies, container resource metrics, security alerts, and vector database index health.
             </p>
           </div>
 
           <button
             onClick={handleManualMetricsRefresh}
-            disabled={isRefreshing}
-            className="px-4 py-2.5 bg-[#1A1A1A] text-amber-400 font-bold uppercase text-xs border border-[#1A1A1A] hover:bg-black flex items-center gap-2 transition-colors self-start md:self-auto shrink-0"
+            disabled={isRefreshing || isLoading}
+            className="px-4 py-2.5 bg-[#1A1A1A] text-amber-400 font-bold uppercase text-xs border border-[#1A1A1A] hover:bg-black flex items-center gap-2 transition-colors self-start md:self-auto shrink-0 cursor-pointer disabled:opacity-50"
           >
-            <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-4 h-4 ${isRefreshing || isLoading ? 'animate-spin' : ''}`} />
             <span>Refresh Telemetry</span>
           </button>
         </div>
@@ -85,7 +69,7 @@ export const OpsHealthDashboard: React.FC = () => {
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
           </div>
           <p className="text-2xl font-serif font-bold text-emerald-800">99.98% Uptime</p>
-          <p className="text-[10px] font-mono text-[#555555]">0 Outages in 90 Days</p>
+          <p className="text-[10px] font-mono text-[#555555]">Durable Worker Running</p>
         </div>
 
         <div className="bg-[#FDFCFB] border-2 border-[#1A1A1A] p-4 space-y-1">
@@ -94,16 +78,16 @@ export const OpsHealthDashboard: React.FC = () => {
             <Zap className="w-3.5 h-3.5 text-amber-600" />
           </div>
           <p className="text-2xl font-serif font-bold text-[#1A1A1A]">{aiP95Latency} ms</p>
-          <p className="text-[10px] font-mono text-emerald-800 font-bold">Gemini 2.5 Flash Optimal</p>
+          <p className="text-[10px] font-mono text-emerald-800 font-bold">Gemini 3.8 Flash Optimal</p>
         </div>
 
         <div className="bg-[#FDFCFB] border-2 border-[#1A1A1A] p-4 space-y-1">
           <div className="flex justify-between items-center text-[10px] font-bold uppercase text-[#555555]">
-            <span>Async Queue Depth</span>
+            <span>Durable Queue Depth</span>
             <Layers className="w-3.5 h-3.5 text-[#B45309]" />
           </div>
-          <p className="text-2xl font-serif font-bold text-[#1A1A1A]">{activeJobs.length} Jobs Active</p>
-          <p className="text-[10px] font-mono text-[#555555]">{completedJobs.length} Executed Today</p>
+          <p className="text-2xl font-serif font-bold text-[#1A1A1A]">{activeJobs.length} Active</p>
+          <p className="text-[10px] font-mono text-[#555555]">{completedJobs.length} Completed • {failedJobs.length} Failed</p>
         </div>
 
         <div className="bg-[#FDFCFB] border-2 border-[#1A1A1A] p-4 space-y-1">
@@ -165,39 +149,60 @@ export const OpsHealthDashboard: React.FC = () => {
           </div>
         </div>
 
-        {/* Live Background Task Queue Inspector */}
+        {/* Live Durable Background Task Queue Inspector */}
         <div className="bg-[#FDFCFB] border-2 border-[#1A1A1A] p-5 shadow-xs space-y-4">
           <div className="flex items-center justify-between border-b border-[#1A1A1A] pb-2">
             <h3 className="text-xs font-bold uppercase tracking-[0.2em] text-[#1A1A1A] flex items-center gap-2">
               <Server className="w-4 h-4 text-[#B45309]" />
-              <span>Background Asynchronous Job Queue</span>
+              <span>Durable Background Job Queue (ai_jobs)</span>
             </h3>
             <span className="text-[9px] bg-emerald-900 text-emerald-100 font-mono px-2 py-0.5">WORKER POOL READY</span>
           </div>
 
           <div className="space-y-2 max-h-72 overflow-y-auto">
-            {jobs.map((job) => (
-              <div key={job.id} className="p-3 bg-[#F9F7F5] border border-[#1A1A1A] space-y-1.5 text-xs">
-                <div className="flex items-center justify-between">
-                  <span className="font-serif font-bold text-[#1A1A1A]">{job.title}</span>
-                  <span className={`px-2 py-0.5 text-[8px] font-mono font-bold uppercase ${
-                    job.status === 'completed' ? 'bg-emerald-900 text-white' :
-                    job.status === 'processing' ? 'bg-amber-100 text-amber-900 border border-amber-900' :
-                    'bg-[#1A1A1A] text-amber-400'
-                  }`}>
-                    {job.status}
-                  </span>
-                </div>
+            {jobs.length > 0 ? (
+              jobs.map((job) => (
+                <div key={job.id} className="p-3 bg-[#F9F7F5] border border-[#1A1A1A] space-y-1.5 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="font-serif font-bold text-[#1A1A1A]">{job.title}</span>
+                    <div className="flex items-center gap-2">
+                      <span className={`px-2 py-0.5 text-[8px] font-mono font-bold uppercase ${
+                        job.status === 'completed' ? 'bg-emerald-900 text-white' :
+                        job.status === 'processing' ? 'bg-amber-100 text-amber-900 border border-amber-900' :
+                        job.status === 'failed' || job.status === 'not_configured' ? 'bg-red-900 text-white' :
+                        'bg-[#1A1A1A] text-amber-400'
+                      }`}>
+                        {job.status}
+                      </span>
+                      {(job.status === 'failed' || job.status === 'not_configured') && (
+                        <button
+                          onClick={() => retry(job.id)}
+                          title="Retry Failed Job"
+                          className="p-1 bg-[#1A1A1A] text-white hover:bg-black transition-colors cursor-pointer"
+                        >
+                          <RotateCcw className="w-3 h-3 text-amber-400" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
 
-                <div className="w-full h-1.5 bg-white border border-[#1A1A1A]/30">
-                  <div className="h-full bg-[#1A1A1A]" style={{ width: `${job.progress}%` }} />
-                </div>
+                  <div className="w-full h-1.5 bg-white border border-[#1A1A1A]/30">
+                    <div
+                      className={`h-full ${job.status === 'failed' ? 'bg-red-600' : 'bg-[#1A1A1A]'}`}
+                      style={{ width: `${job.progress ?? (job.status === 'completed' ? 100 : 15)}%` }}
+                    />
+                  </div>
 
-                <p className="text-[9px] font-mono text-[#555555]">
-                  Queued: {job.queuedAt} • {job.logs[job.logs.length - 1]}
-                </p>
-              </div>
-            ))}
+                  <p className="text-[9px] font-mono text-[#555555] truncate">
+                    Queued: {new Date(job.timestamps.queuedAt).toLocaleTimeString()} • {job.logs[job.logs.length - 1] || job.operation}
+                  </p>
+                </div>
+              ))
+            ) : (
+              <p className="text-xs text-[#555555] font-mono italic p-4 text-center">
+                No durable jobs currently queued or recorded for this chamber.
+              </p>
+            )}
           </div>
         </div>
 

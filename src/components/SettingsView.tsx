@@ -132,7 +132,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </span>
                 </div>
                 <p className="text-[11px] text-slate-600 font-sans">
-                  Permissions are enforced server-side using authoritative chamber records stored in Firestore.
+                  Permissions are enforced server-side using authoritative chamber records stored in Supabase PostgreSQL.
                 </p>
               </div>
             </div>

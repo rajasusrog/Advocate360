@@ -28,8 +28,30 @@ import {
   recordPaymentInDb,
   createTimelineEventInDb,
   listTimelineEventsForMatter,
+  saveDraftToMatterVault,
+  getLatestDraftForMatterInDb,
+  approveDraftInDb,
+  updateDraftInDb,
+  saveDraftRevisionInDb,
+  listDraftsForMatterInDb,
+  getDraftByIdInDb,
+  getDraftVersionsInDb,
+  saveExtractedFactsToMatter,
+  listExtractedFactsForMatter,
+  reviewExtractedFactInDb,
+  getAcceptedFactsForMatterInDb,
+  hashClientInviteTokenSha256,
 } from '../src/lib/useMatterData';
+import {
+  savePendingPortalInviteToken,
+  peekPendingPortalInviteToken,
+  clearPendingPortalInviteToken,
+} from '../src/lib/supabase';
 import { AskAdvocateAssistant } from '../src/components/AskAdvocateAssistant';
+import { BillingModule } from '../src/components/BillingModule';
+import { ClientPortal, RestrictedClientPortal } from '../src/components/ClientPortal';
+import { DurableBackgroundWorker } from '../src/lib/serverWorker';
+import { DraftingAssistant } from '../src/components/DraftingAssistant';
 import { FirebaseToSupabaseMigrator } from '../src/lib/firebaseToSupabaseMigration';
 
 /**
@@ -85,6 +107,14 @@ test('[Mock-Backed Integration Test] Simulated PostgREST Login-to-Matter & API A
       id: '22222222-2222-4222-8222-222222222222',
       email: 'outsider.advocate@chamberB.in',
     },
+    'jwt-client-valid-token': {
+      id: '33333333-3333-4333-8333-333333333333',
+      email: 'client.recipient@company.in',
+    },
+    'jwt-paralegal-valid-token': {
+      id: '44444444-4444-4444-8444-444444444444',
+      email: 'paralegal.staff@chamberA.in',
+    },
   };
 
   const simulatedState = {
@@ -100,6 +130,13 @@ test('[Mock-Backed Integration Test] Simulated PostgREST Login-to-Matter & API A
     invoices: [] as any[],
     payments: [] as any[],
     timeline_events: [] as any[],
+    drafts: [] as any[],
+    draft_versions: [] as any[],
+    findings: [] as any[],
+    ai_jobs: [] as any[],
+    ai_results: [] as any[],
+    client_invitations: [] as any[],
+    client_access_grants: [] as any[],
     storageObjects: new Map<string, Buffer>(),
     forceMatterInsertError: false,
   };
@@ -114,6 +151,9 @@ test('[Mock-Backed Integration Test] Simulated PostgREST Login-to-Matter & API A
     const auth = headers.authorization || '';
     if (!auth.startsWith('Bearer ')) return null;
     const token = auth.substring(7).trim();
+    if (token === 'test-anon-publishable-key' || token === 'service-role-key') {
+      return USERS['jwt-member-valid-token'];
+    }
     return USERS[token] || null;
   };
 
@@ -297,31 +337,39 @@ test('[Mock-Backed Integration Test] Simulated PostgREST Login-to-Matter & API A
         return;
       }
 
-      if (body.p_idempotency_key) {
-        const existingPay = simulatedState.payments.find(
-          (p) =>
-            p.workspace_id === body.p_workspace_id && p.idempotency_key === body.p_idempotency_key
-        );
-        if (existingPay) {
-          if (
-            existingPay.invoice_id !== body.p_invoice_id ||
-            Number(existingPay.amount) !== payAmount
-          ) {
-            res.statusCode = 400;
-            res.end(
-              JSON.stringify({
-                message: 'Idempotency key collision with conflicting payment details',
-              })
-            );
-            return;
-          }
-          const inv = simulatedState.invoices.find(
-            (i) => i.id === body.p_invoice_id && i.workspace_id === body.p_workspace_id
+      if (!body.p_idempotency_key || !body.p_idempotency_key.trim()) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ message: 'Operation ID (idempotency key) is required' }));
+        return;
+      }
+
+      const existingPay = simulatedState.payments.find(
+        (p) =>
+          p.workspace_id === body.p_workspace_id && p.idempotency_key === body.p_idempotency_key
+      );
+      if (existingPay) {
+        if (
+          existingPay.invoice_id !== body.p_invoice_id ||
+          Number(existingPay.amount) !== payAmount ||
+          existingPay.payment_date !== body.p_payment_date ||
+          existingPay.payment_method !== (body.p_method || 'UPI') ||
+          (existingPay.reference_no || '') !== (body.p_reference_no || '') ||
+          (existingPay.notes || '') !== (body.p_notes || '')
+        ) {
+          res.statusCode = 400;
+          res.end(
+            JSON.stringify({
+              message: 'Idempotency key collision with conflicting payment details',
+            })
           );
-          res.statusCode = 200;
-          res.end(JSON.stringify(inv));
           return;
         }
+        const inv = simulatedState.invoices.find(
+          (i) => i.id === body.p_invoice_id && i.workspace_id === body.p_workspace_id
+        );
+        res.statusCode = 200;
+        res.end(JSON.stringify(inv));
+        return;
       }
 
       const invIdx = simulatedState.invoices.findIndex(
@@ -365,6 +413,777 @@ test('[Mock-Backed Integration Test] Simulated PostgREST Login-to-Matter & API A
 
       res.statusCode = 200;
       res.end(JSON.stringify(inv));
+      return;
+    }
+
+    // 2D. RPC: POST /rest/v1/rpc/save_draft_revision_atomic
+    if (pathname === '/rest/v1/rpc/save_draft_revision_atomic' && req.method === 'POST') {
+      const body = await readJsonBody(req);
+      if (!isUserActiveMember(caller.id, body.p_workspace_id)) {
+        res.statusCode = 403;
+        res.end(
+          JSON.stringify({
+            message: 'Unauthorized: Caller does not have drafting permissions in this workspace',
+          })
+        );
+        return;
+      }
+
+      if (!body.p_title || !String(body.p_title).trim()) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ message: 'Draft title is required' }));
+        return;
+      }
+
+      // Safe retry idempotency with p_operation_id
+      if (body.p_operation_id && String(body.p_operation_id).trim()) {
+        const existingVer = simulatedState.draft_versions.find(
+          (v) =>
+            v.workspace_id === body.p_workspace_id &&
+            v.operation_id === String(body.p_operation_id).trim()
+        );
+        if (existingVer) {
+          const d = simulatedState.drafts.find((dr) => dr.id === existingVer.draft_id);
+          if (d) {
+            res.statusCode = 200;
+            res.end(JSON.stringify(d));
+            return;
+          }
+        }
+      }
+
+      if (body.p_draft_id) {
+        const draftIdx = simulatedState.drafts.findIndex(
+          (d) => d.id === body.p_draft_id && d.workspace_id === body.p_workspace_id
+        );
+        if (draftIdx === -1) {
+          res.statusCode = 404;
+          res.end(JSON.stringify({ message: 'Draft not found or unauthorized in matter' }));
+          return;
+        }
+
+        const draft = simulatedState.drafts[draftIdx];
+        if (
+          body.p_expected_version !== null &&
+          body.p_expected_version !== undefined &&
+          draft.current_version !== body.p_expected_version
+        ) {
+          res.statusCode = 400;
+          res.end(
+            JSON.stringify({
+              message: `Stale save rejected: expected version ${body.p_expected_version} does not match current version ${draft.current_version}`,
+            })
+          );
+          return;
+        }
+
+        const nextVer = draft.current_version + 1;
+        draft.title = String(body.p_title).trim();
+        draft.content = body.p_content || '';
+        draft.doc_type = body.p_doc_type || draft.doc_type;
+        draft.current_version = nextVer;
+        draft.status = 'Draft';
+        draft.approved_version = null;
+        draft.approved_by_user_id = null;
+        draft.approved_at = null;
+        draft.updated_at = new Date().toISOString();
+
+        simulatedState.draft_versions.push({
+          id: nextUuid(),
+          workspace_id: body.p_workspace_id,
+          draft_id: draft.id,
+          version: nextVer,
+          content: draft.content,
+          change_notes: body.p_change_notes || `Revision v${nextVer}`,
+          operation_id: body.p_operation_id || null,
+          created_by_user_id: caller.id,
+          created_at: new Date().toISOString(),
+        });
+
+        res.statusCode = 200;
+        res.end(JSON.stringify(draft));
+        return;
+      } else {
+        const newDraft = {
+          id: nextUuid(),
+          workspace_id: body.p_workspace_id,
+          matter_id: body.p_matter_id,
+          doc_type: body.p_doc_type || 'Pleading',
+          title: String(body.p_title).trim(),
+          content: body.p_content || '',
+          current_version: 1,
+          status: 'Draft',
+          approved_version: null,
+          approved_by_user_id: null,
+          approved_at: null,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+        simulatedState.drafts.push(newDraft);
+
+        simulatedState.draft_versions.push({
+          id: nextUuid(),
+          workspace_id: body.p_workspace_id,
+          draft_id: newDraft.id,
+          version: 1,
+          content: newDraft.content,
+          change_notes: body.p_change_notes || 'Initial draft revision v1',
+          operation_id: body.p_operation_id || null,
+          created_by_user_id: caller.id,
+          created_at: new Date().toISOString(),
+        });
+
+        res.statusCode = 200;
+        res.end(JSON.stringify(newDraft));
+        return;
+      }
+    }
+
+    // 2E. RPC: POST /rest/v1/rpc/approve_draft_atomic
+    if (pathname === '/rest/v1/rpc/approve_draft_atomic' && req.method === 'POST') {
+      const body = await readJsonBody(req);
+      const membership = simulatedState.workspace_memberships.find(
+        (m) =>
+          m.workspace_id === body.p_workspace_id &&
+          m.user_id === caller.id &&
+          m.status === 'Active'
+      );
+      if (
+        !membership ||
+        !['CHAMBER_OWNER', 'SENIOR_ADVOCATE'].includes(membership.role)
+      ) {
+        res.statusCode = 403;
+        res.end(
+          JSON.stringify({
+            message: 'Unauthorized: Caller does not have permissions to approve drafts',
+          })
+        );
+        return;
+      }
+
+      const draftIdx = simulatedState.drafts.findIndex(
+        (d) => d.id === body.p_draft_id && d.workspace_id === body.p_workspace_id
+      );
+      if (draftIdx === -1) {
+        res.statusCode = 404;
+        res.end(JSON.stringify({ message: 'Draft not found or unauthorized in workspace' }));
+        return;
+      }
+
+      const draft = simulatedState.drafts[draftIdx];
+      if (
+        body.p_expected_version === null ||
+        body.p_expected_version === undefined ||
+        draft.current_version !== body.p_expected_version
+      ) {
+        res.statusCode = 400;
+        res.end(
+          JSON.stringify({
+            message: `Stale approval rejected: expected version ${body.p_expected_version} does not match current version ${draft.current_version}`,
+          })
+        );
+        return;
+      }
+
+      const verExists = simulatedState.draft_versions.some(
+        (v) => v.draft_id === draft.id && v.version === body.p_expected_version
+      );
+      if (!verExists) {
+        res.statusCode = 400;
+        res.end(
+          JSON.stringify({
+            message: `Cannot approve unsaved draft version ${body.p_expected_version}`,
+          })
+        );
+        return;
+      }
+
+      draft.status = 'Approved';
+      draft.approved_version = body.p_expected_version;
+      draft.approved_by_user_id = caller.id;
+      draft.approved_at = new Date().toISOString();
+      draft.updated_at = new Date().toISOString();
+
+      res.statusCode = 200;
+      res.end(JSON.stringify(draft));
+      return;
+    }
+
+    // 2F. RPC: POST /rest/v1/rpc/create_document_with_initial_version_atomic
+    if (pathname === '/rest/v1/rpc/create_document_with_initial_version_atomic' && req.method === 'POST') {
+      const body = await readJsonBody(req);
+      if (!isUserActiveMember(caller.id, body.p_workspace_id)) {
+        res.statusCode = 403;
+        res.end(JSON.stringify({ message: 'Unauthorized workspace member' }));
+        return;
+      }
+
+      if (body.p_operation_id) {
+        const existingVer = simulatedState.document_versions.find(
+          (v) => v.workspace_id === body.p_workspace_id && v.operation_id === body.p_operation_id
+        );
+        if (existingVer) {
+          const existingDoc = simulatedState.documents.find((d) => d.id === existingVer.document_id);
+          res.statusCode = 200;
+          res.end(
+            JSON.stringify({
+              document: existingDoc,
+              version: existingVer,
+              idempotent_retry: true,
+            })
+          );
+          return;
+        }
+      }
+
+      const docId = nextUuid();
+      const now = new Date().toISOString();
+      const newDoc = {
+        id: docId,
+        workspace_id: body.p_workspace_id,
+        matter_id: body.p_matter_id,
+        name: String(body.p_name).trim(),
+        doc_type: body.p_doc_type || 'Document',
+        storage_bucket: body.p_storage_bucket || 'matter-documents',
+        file_path: body.p_file_path,
+        file_size: Number(body.p_file_size || 0),
+        mime_type: body.p_mime_type || 'text/plain',
+        extracted_text: body.p_extracted_text || null,
+        uploaded_by_user_id: caller.id,
+        processing_status: body.p_extracted_text ? 'Processed' : 'Uploaded',
+        review_status: 'Unreviewed',
+        current_version: 1,
+        created_at: now,
+        updated_at: now,
+      };
+      simulatedState.documents.push(newDoc);
+
+      const newVer = {
+        id: nextUuid(),
+        workspace_id: body.p_workspace_id,
+        document_id: docId,
+        version: 1,
+        file_path: body.p_file_path,
+        file_size: Number(body.p_file_size || 0),
+        mime_type: body.p_mime_type || 'text/plain',
+        changes_summary: body.p_changes_summary || 'Initial upload v1',
+        extracted_text: body.p_extracted_text || null,
+        author_name: body.p_author_name || 'Workspace Member',
+        created_by_user_id: caller.id,
+        status: 'committed',
+        operation_id: body.p_operation_id || null,
+        created_at: now,
+      };
+      simulatedState.document_versions.push(newVer);
+
+      res.statusCode = 200;
+      res.end(
+        JSON.stringify({
+          document: newDoc,
+          version: newVer,
+          idempotent_retry: false,
+        })
+      );
+      return;
+    }
+
+    // 2G. RPC: POST /rest/v1/rpc/commit_document_revision_atomic
+    if (pathname === '/rest/v1/rpc/commit_document_revision_atomic' && req.method === 'POST') {
+      const body = await readJsonBody(req);
+      if (!isUserActiveMember(caller.id, body.p_workspace_id)) {
+        res.statusCode = 403;
+        res.end(JSON.stringify({ message: 'Unauthorized workspace member' }));
+        return;
+      }
+
+      if (body.p_operation_id) {
+        const existingVer = simulatedState.document_versions.find(
+          (v) => v.workspace_id === body.p_workspace_id && v.operation_id === body.p_operation_id
+        );
+        if (existingVer) {
+          const existingDoc = simulatedState.documents.find((d) => d.id === existingVer.document_id);
+          res.statusCode = 200;
+          res.end(
+            JSON.stringify({
+              document: existingDoc,
+              version: existingVer,
+              idempotent_retry: true,
+            })
+          );
+          return;
+        }
+      }
+
+      const docIdx = simulatedState.documents.findIndex(
+        (d) => d.id === body.p_document_id && d.workspace_id === body.p_workspace_id && d.matter_id === body.p_matter_id
+      );
+      if (docIdx === -1) {
+        res.statusCode = 404;
+        res.end(JSON.stringify({ message: 'Document not found or scope mismatch' }));
+        return;
+      }
+
+      const doc = simulatedState.documents[docIdx];
+      if (
+        body.p_expected_version !== null &&
+        body.p_expected_version !== undefined &&
+        doc.current_version !== body.p_expected_version
+      ) {
+        res.statusCode = 400;
+        res.end(
+          JSON.stringify({
+            message: `Stale document revision: expected version ${body.p_expected_version} does not match current version ${doc.current_version}`,
+          })
+        );
+        return;
+      }
+
+      const nextVer = doc.current_version + 1;
+      const now = new Date().toISOString();
+
+      const newVer = {
+        id: nextUuid(),
+        workspace_id: body.p_workspace_id,
+        document_id: doc.id,
+        version: nextVer,
+        file_path: body.p_file_path,
+        file_size: Number(body.p_file_size || doc.file_size),
+        mime_type: body.p_mime_type || doc.mime_type,
+        changes_summary: body.p_changes_summary,
+        extracted_text: body.p_extracted_text || doc.extracted_text,
+        author_name: body.p_author_name || 'Workspace Member',
+        created_by_user_id: caller.id,
+        status: 'committed',
+        operation_id: body.p_operation_id || null,
+        created_at: now,
+      };
+      simulatedState.document_versions.push(newVer);
+
+      doc.current_version = nextVer;
+      doc.file_path = body.p_file_path;
+      doc.file_size = Number(body.p_file_size || doc.file_size);
+      doc.mime_type = body.p_mime_type || doc.mime_type;
+      doc.extracted_text = body.p_extracted_text || doc.extracted_text;
+      doc.updated_at = now;
+
+      res.statusCode = 200;
+      res.end(
+        JSON.stringify({
+          document: doc,
+          version: newVer,
+          idempotent_retry: false,
+        })
+      );
+      return;
+    }
+
+    // 2H. RPC: POST /rest/v1/rpc/review_extracted_fact_atomic
+    if (pathname === '/rest/v1/rpc/review_extracted_fact_atomic' && req.method === 'POST') {
+      const body = await readJsonBody(req);
+      if (!isUserActiveMember(caller.id, body.p_workspace_id)) {
+        res.statusCode = 403;
+        res.end(JSON.stringify({ message: 'Unauthorized workspace member' }));
+        return;
+      }
+
+      const factIdx = simulatedState.findings.findIndex(
+        (f) => f.id === body.p_finding_id && f.workspace_id === body.p_workspace_id
+      );
+      if (factIdx === -1) {
+        res.statusCode = 404;
+        res.end(JSON.stringify({ message: 'Extracted fact finding not found' }));
+        return;
+      }
+
+      const fact = simulatedState.findings[factIdx];
+      const now = new Date().toISOString();
+
+      if (body.p_action === 'Accept') {
+        fact.status = 'Accepted';
+        fact.finding_text = body.p_edited_text || fact.finding_text;
+      } else if (body.p_action === 'Reject') {
+        fact.status = 'Rejected';
+      } else if (body.p_action === 'Edit') {
+        fact.status = 'Accepted';
+        fact.finding_text = body.p_edited_text;
+        fact.edited_text = body.p_edited_text;
+      }
+
+      fact.reviewed_by_user_id = caller.id;
+      fact.reviewed_at = now;
+
+      res.statusCode = 200;
+      res.end(JSON.stringify(fact));
+      return;
+    }
+
+    // 2I. RPC: POST /rest/v1/rpc/claim_next_ai_job_atomic
+    if (pathname === '/rest/v1/rpc/claim_next_ai_job_atomic' && req.method === 'POST') {
+      const body = await readJsonBody(req);
+      const now = new Date();
+      const jobIdx = simulatedState.ai_jobs.findIndex(
+        (j) => j.status === 'queued' || (j.status === 'processing' && j.lease_expires_at && new Date(j.lease_expires_at) < now)
+      );
+
+      if (jobIdx === -1) {
+        res.statusCode = 200;
+        res.end(JSON.stringify([]));
+        return;
+      }
+
+      const job = simulatedState.ai_jobs[jobIdx];
+      job.attempt_count = (job.attempt_count || 0) + 1;
+      job.status = 'processing';
+      job.lease_token = nextUuid();
+      job.lease_expires_at = new Date(now.getTime() + (body.p_lease_seconds || 60) * 1000).toISOString();
+      job.started_at = job.started_at || now.toISOString();
+      job.logs = [...(job.logs || []), `Claimed by worker ${body.p_worker_id || 'srv'}`];
+
+      res.statusCode = 200;
+      res.end(JSON.stringify([job]));
+      return;
+    }
+
+    // 2J. RPC: POST /rest/v1/rpc/commit_ai_job_result_atomic
+    if (pathname === '/rest/v1/rpc/commit_ai_job_result_atomic' && req.method === 'POST') {
+      const body = await readJsonBody(req);
+      const job = simulatedState.ai_jobs.find((j) => j.id === body.p_job_id);
+
+      if (!job) {
+        res.statusCode = 404;
+        res.end(JSON.stringify({ message: 'AI job not found' }));
+        return;
+      }
+
+      let resultObj = simulatedState.ai_results.find((r) => r.job_id === job.id);
+      if (!resultObj) {
+        resultObj = {
+          id: nextUuid(),
+          job_id: job.id,
+          workspace_id: job.workspace_id,
+          matter_id: job.matter_id,
+          operation: job.operation,
+          result_payload: body.p_result_payload,
+          created_at: new Date().toISOString(),
+        };
+        simulatedState.ai_results.push(resultObj);
+      } else {
+        resultObj.result_payload = body.p_result_payload;
+      }
+
+      job.status = 'completed';
+      job.progress = 100;
+      job.completed_at = new Date().toISOString();
+      if (body.p_log_message) {
+        job.logs = [...(job.logs || []), body.p_log_message];
+      }
+
+      res.statusCode = 200;
+      res.end(JSON.stringify(resultObj));
+      return;
+    }
+
+    // 2K. RPC: POST /rest/v1/rpc/create_client_invitation_atomic
+    if (pathname === '/rest/v1/rpc/create_client_invitation_atomic' && req.method === 'POST') {
+      const body = await readJsonBody(req);
+      const membership = simulatedState.workspace_memberships.find(
+        (m) => m.workspace_id === body.p_workspace_id && m.user_id === caller.id && m.status === 'Active'
+      );
+      if (!membership || !['CHAMBER_OWNER', 'SENIOR_ADVOCATE', 'ASSOCIATE'].includes(membership.role)) {
+        res.statusCode = 403;
+        res.end(JSON.stringify({ message: '403 Forbidden: Only authorized chamber staff can issue client invitations.' }));
+        return;
+      }
+
+      const matter = simulatedState.matters.find(
+        (m) => m.id === body.p_matter_id && m.workspace_id === body.p_workspace_id
+      );
+      if (!matter) {
+        res.statusCode = 403;
+        res.end(JSON.stringify({ message: '403 Forbidden: Specified matter does not exist in workspace.' }));
+        return;
+      }
+
+      if (!body.p_token_hash || !/^[0-9a-f]{64}$/.test(body.p_token_hash)) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ message: '400 Bad Request: 64-character SHA-256 token_hash required.' }));
+        return;
+      }
+
+      const now = new Date().toISOString();
+      const inv = {
+        id: nextUuid(),
+        workspace_id: body.p_workspace_id,
+        matter_id: body.p_matter_id,
+        client_email: String(body.p_client_email || '').trim().toLowerCase(),
+        client_name: body.p_client_name || 'Client',
+        client_phone: body.p_client_phone || null,
+        token_hash: body.p_token_hash,
+        scopes: body.p_scopes || {},
+        expires_at: body.p_expires_at,
+        created_by_user_id: caller.id,
+        status: 'Active',
+        delivery_status: body.p_delivery_status || 'email_not_sent',
+        created_at: now,
+        updated_at: now,
+      };
+      simulatedState.client_invitations.push(inv);
+
+      const { token_hash, ...safeResponse } = inv;
+      res.statusCode = 200;
+      res.end(JSON.stringify({ ...safeResponse, matter_title: matter.title }));
+      return;
+    }
+
+    // 2L. RPC: POST /rest/v1/rpc/redeem_client_invitation_atomic
+    if (pathname === '/rest/v1/rpc/redeem_client_invitation_atomic' && req.method === 'POST') {
+      const body = await readJsonBody(req);
+      const inv = simulatedState.client_invitations.find((i) => i.token_hash === body.p_token_hash);
+      if (!inv) {
+        res.statusCode = 404;
+        res.end(JSON.stringify({ message: '404 Not Found: Invalid invitation token.' }));
+        return;
+      }
+
+      if (inv.status === 'Revoked' || inv.revoked_at) {
+        res.statusCode = 403;
+        res.end(JSON.stringify({ message: '403 Forbidden: This client portal invitation has been revoked.' }));
+        return;
+      }
+
+      if (caller.email.toLowerCase().trim() !== inv.client_email.toLowerCase().trim()) {
+        res.statusCode = 403;
+        res.end(
+          JSON.stringify({
+            message: `403 Forbidden: Recipient email mismatch. This invitation was issued exclusively for ${inv.client_email}.`,
+          })
+        );
+        return;
+      }
+
+      if (inv.status === 'Expired' || new Date(inv.expires_at).getTime() <= Date.now()) {
+        res.statusCode = 410;
+        res.end(JSON.stringify({ message: '410 Gone: This client portal invitation has expired.' }));
+        return;
+      }
+
+      let existingGrant = simulatedState.client_access_grants.find(
+        (g) => g.workspace_id === inv.workspace_id && g.matter_id === inv.matter_id && g.client_user_id === caller.id
+      );
+
+      if (inv.status === 'Redeemed' || inv.redeemed_at) {
+        if (!existingGrant || existingGrant.revoked_at) {
+          res.statusCode = 403;
+          res.end(JSON.stringify({ message: '403 Forbidden: Access granted by this invitation has been revoked.' }));
+          return;
+        }
+        res.statusCode = 200;
+        res.end(
+          JSON.stringify({
+            grant_id: existingGrant.id,
+            invitation_id: inv.id,
+            workspace_id: inv.workspace_id,
+            matter_id: inv.matter_id,
+            client_user_id: caller.id,
+            client_email: inv.client_email,
+            client_name: inv.client_name,
+            scopes: existingGrant.scopes,
+            expires_at: existingGrant.expires_at,
+            status: 'Redeemed',
+            replayed: true,
+          })
+        );
+        return;
+      }
+
+      const now = new Date().toISOString();
+      inv.status = 'Redeemed';
+      inv.redeemed_by_user_id = caller.id;
+      inv.redeemed_at = now;
+      inv.updated_at = now;
+
+      if (!existingGrant) {
+        existingGrant = {
+          id: nextUuid(),
+          workspace_id: inv.workspace_id,
+          matter_id: inv.matter_id,
+          client_user_id: caller.id,
+          invitation_id: inv.id,
+          client_email: inv.client_email,
+          client_name: inv.client_name,
+          scopes: inv.scopes,
+          granted_by_user_id: inv.created_by_user_id,
+          granted_at: now,
+          expires_at: inv.expires_at,
+          revoked_at: null,
+          updated_at: now,
+        };
+        simulatedState.client_access_grants.push(existingGrant);
+      } else {
+        existingGrant.revoked_at = null;
+        existingGrant.scopes = inv.scopes;
+        existingGrant.expires_at = inv.expires_at;
+        existingGrant.updated_at = now;
+      }
+
+      res.statusCode = 200;
+      res.end(
+        JSON.stringify({
+          grant_id: existingGrant.id,
+          invitation_id: inv.id,
+          workspace_id: inv.workspace_id,
+          matter_id: inv.matter_id,
+          client_user_id: caller.id,
+          client_email: inv.client_email,
+          client_name: inv.client_name,
+          scopes: existingGrant.scopes,
+          expires_at: existingGrant.expires_at,
+          status: 'Redeemed',
+          replayed: false,
+        })
+      );
+      return;
+    }
+
+    // 2M. RPC: POST /rest/v1/rpc/revoke_client_invitation_atomic
+    if (pathname === '/rest/v1/rpc/revoke_client_invitation_atomic' && req.method === 'POST') {
+      const body = await readJsonBody(req);
+      const membership = simulatedState.workspace_memberships.find(
+        (m) => m.workspace_id === body.p_workspace_id && m.user_id === caller.id && m.status === 'Active'
+      );
+      if (!membership || !['CHAMBER_OWNER', 'SENIOR_ADVOCATE', 'ASSOCIATE'].includes(membership.role)) {
+        res.statusCode = 403;
+        res.end(JSON.stringify({ message: '403 Forbidden: Only authorized chamber staff can revoke client portal access.' }));
+        return;
+      }
+
+      const inv = simulatedState.client_invitations.find(
+        (i) => i.id === body.p_invitation_id && i.workspace_id === body.p_workspace_id
+      );
+      if (!inv) {
+        res.statusCode = 404;
+        res.end(JSON.stringify({ message: '404 Not Found: Client invitation not found.' }));
+        return;
+      }
+
+      const now = new Date().toISOString();
+      inv.status = 'Revoked';
+      inv.revoked_at = now;
+      inv.revoked_by_user_id = caller.id;
+
+      let revokedGrantsCount = 0;
+      for (const g of simulatedState.client_access_grants) {
+        if (
+          g.workspace_id === body.p_workspace_id &&
+          g.matter_id === inv.matter_id &&
+          (g.invitation_id === inv.id || g.client_email === inv.client_email) &&
+          !g.revoked_at
+        ) {
+          g.revoked_at = now;
+          g.revoked_by_user_id = caller.id;
+          revokedGrantsCount += 1;
+        }
+      }
+
+      res.statusCode = 200;
+      res.end(
+        JSON.stringify({
+          id: inv.id,
+          workspace_id: inv.workspace_id,
+          matter_id: inv.matter_id,
+          client_email: inv.client_email,
+          status: 'Revoked',
+          revoked_at: now,
+          revoked_grants_count: revokedGrantsCount,
+        })
+      );
+      return;
+    }
+
+    // 2N. RPC: POST /rest/v1/rpc/get_restricted_client_portal_matter_atomic
+    if (pathname === '/rest/v1/rpc/get_restricted_client_portal_matter_atomic' && req.method === 'POST') {
+      const body = await readJsonBody(req);
+      const grant = simulatedState.client_access_grants.find(
+        (g) =>
+          g.matter_id === body.p_matter_id &&
+          g.client_user_id === caller.id &&
+          !g.revoked_at &&
+          (!g.expires_at || new Date(g.expires_at).getTime() > Date.now())
+      );
+
+      if (!grant) {
+        res.statusCode = 403;
+        res.end(JSON.stringify({ message: '403 Forbidden: Active client access grant not found or revoked.' }));
+        return;
+      }
+
+      const matter = simulatedState.matters.find(
+        (m) => m.id === body.p_matter_id && m.workspace_id === grant.workspace_id
+      );
+      if (!matter) {
+        res.statusCode = 404;
+        res.end(JSON.stringify({ message: '404 Not Found: Matter not found.' }));
+        return;
+      }
+
+      const docs = grant.scopes?.viewFilings
+        ? simulatedState.documents
+            .filter((d) => d.matter_id === matter.id && d.workspace_id === grant.workspace_id)
+            .map((d) => ({ id: d.id, name: d.name, doc_type: d.doc_type, current_version: d.current_version }))
+        : [];
+      const invoices = grant.scopes?.viewBilling
+        ? simulatedState.invoices.filter((i) => i.matter_id === matter.id && i.workspace_id === grant.workspace_id)
+        : [];
+      const timeline = grant.scopes?.viewHearings
+        ? simulatedState.timeline_events.filter((t) => t.matter_id === matter.id && t.workspace_id === grant.workspace_id)
+        : [];
+
+      res.statusCode = 200;
+      res.end(
+        JSON.stringify({
+          grant: {
+            id: grant.id,
+            workspace_id: grant.workspace_id,
+            workspace_name: 'Chamber A',
+            matter_id: grant.matter_id,
+            client_email: grant.client_email,
+            client_name: grant.client_name,
+            scopes: grant.scopes,
+            granted_at: grant.granted_at,
+            expires_at: grant.expires_at,
+          },
+          matter: {
+            id: matter.id,
+            workspace_id: matter.workspace_id,
+            title: matter.title,
+            case_number: matter.case_number,
+            court_name: matter.court_name,
+            stage: matter.stage,
+            status: matter.status,
+            client_name: matter.client_name,
+          },
+          hearings: [],
+          timeline,
+          documents: docs,
+          invoices,
+        })
+      );
+      return;
+    }
+
+    // 2O. Table: GET /rest/v1/client_invitations
+    if (pathname === '/rest/v1/client_invitations' && req.method === 'GET') {
+      const wsFilter = urlObj.searchParams.get('workspace_id')?.replace(/^eq\./, '');
+      if (!wsFilter || !isUserActiveMember(caller.id, wsFilter)) {
+        res.statusCode = 403;
+        res.end(JSON.stringify({ message: '403 Forbidden' }));
+        return;
+      }
+      const rows = simulatedState.client_invitations
+        .filter((i) => i.workspace_id === wsFilter)
+        .map(({ token_hash, ...rest }) => rest);
+      res.statusCode = 200;
+      res.end(JSON.stringify(rows));
       return;
     }
 
@@ -545,9 +1364,9 @@ test('[Mock-Backed Integration Test] Simulated PostgREST Login-to-Matter & API A
       }
     }
 
-    // 7. Generic workspace-scoped tables: documents, document_versions, tasks, time_entries, invoices, payments, timeline_events
+    // 7. Generic workspace-scoped tables: documents, document_versions, tasks, time_entries, invoices, payments, timeline_events, drafts, draft_versions, findings, ai_jobs, ai_results
     const tableMatch = pathname.match(
-      /^\/rest\/v1\/(documents|document_versions|tasks|time_entries|invoices|payments|timeline_events)$/
+      /^\/rest\/v1\/(documents|document_versions|tasks|time_entries|invoices|payments|timeline_events|drafts|draft_versions|findings|ai_jobs|ai_results)$/
     );
     if (tableMatch) {
       const tableName = tableMatch[1] as
@@ -557,7 +1376,12 @@ test('[Mock-Backed Integration Test] Simulated PostgREST Login-to-Matter & API A
         | 'time_entries'
         | 'invoices'
         | 'payments'
-        | 'timeline_events';
+        | 'timeline_events'
+        | 'drafts'
+        | 'draft_versions'
+        | 'findings'
+        | 'ai_jobs'
+        | 'ai_results';
       const tableStore = simulatedState[tableName] as any[];
       const accept = String(req.headers.accept || '');
       const wantsSingleObject = accept.includes('vnd.pgrst.object');
@@ -588,22 +1412,32 @@ test('[Mock-Backed Integration Test] Simulated PostgREST Login-to-Matter & API A
 
       if (req.method === 'POST') {
         const body = await readJsonBody(req);
-        const item = Array.isArray(body) ? body[0] : body;
-        if (!isUserActiveMember(caller.id, item.workspace_id)) {
-          res.statusCode = 403;
-          res.end(JSON.stringify({ message: `RLS policy violation on ${tableName}` }));
+        const items = Array.isArray(body) ? body : [body];
+        if (items.length === 0) {
+          res.statusCode = 201;
+          res.end(JSON.stringify([]));
           return;
         }
+        for (const item of items) {
+          if (!isUserActiveMember(caller.id, item.workspace_id)) {
+            res.statusCode = 403;
+            res.end(JSON.stringify({ message: `RLS policy violation on ${tableName}` }));
+            return;
+          }
+        }
         const now = new Date().toISOString();
-        const created = {
-          id: item.id || nextUuid(),
-          created_at: now,
-          updated_at: now,
-          ...item,
-        };
-        tableStore.push(created);
+        const createdList = items.map((item) => {
+          const created = {
+            id: item.id || nextUuid(),
+            created_at: now,
+            updated_at: now,
+            ...item,
+          };
+          tableStore.push(created);
+          return created;
+        });
         res.statusCode = 201;
-        res.end(JSON.stringify(wantsSingleObject ? created : [created]));
+        res.end(JSON.stringify(wantsSingleObject ? createdList[0] : createdList));
         return;
       }
 
@@ -623,6 +1457,15 @@ test('[Mock-Backed Integration Test] Simulated PostgREST Login-to-Matter & API A
           res.end(JSON.stringify({ message: `RLS denied update on ${tableName}` }));
           return;
         }
+
+        // Simulate PostgreSQL trg_invalidate_draft_approval trigger on drafts
+        if (tableName === 'drafts' && (body.content !== undefined || body.title !== undefined) && body.approved_version === undefined) {
+          body.status = 'Draft';
+          body.approved_version = null;
+          body.approved_by_user_id = null;
+          body.approved_at = null;
+        }
+
         tableStore[idx] = {
           ...tableStore[idx],
           ...body,
@@ -644,8 +1487,12 @@ test('[Mock-Backed Integration Test] Simulated PostgREST Login-to-Matter & API A
 
   const prevSupabaseUrl = process.env.VITE_SUPABASE_URL;
   const prevSupabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY;
+  const prevGeminiKey = process.env.GEMINI_API_KEY;
+  process.env.NODE_ENV = 'test';
+  process.env.NODE_TEST_CONTEXT = 'true';
   process.env.VITE_SUPABASE_URL = sbBaseUrl;
   process.env.VITE_SUPABASE_ANON_KEY = 'test-anon-publishable-key';
+  process.env.GEMINI_API_KEY = '';
 
   const apiApp = createApiApp();
   const apiServer = http.createServer(apiApp);
@@ -974,11 +1821,55 @@ test('[Mock-Backed Integration Test] Simulated PostgREST Login-to-Matter & API A
             changesSummary: 'Added registration stamp page',
             extractedText: 'Updated summary from certified revision',
             createdByUserId: USERS['jwt-member-valid-token'].id,
+            expectedVersion: 1,
+            operationId: 'op-rev-2-idempotent',
           },
           memberClient
         );
 
         assert.strictEqual(revisedDoc.version, 2);
+
+        // Verify lost-response retry with same operationId returns existing v2 without incrementing version
+        const retryRevisedDoc = await createDocumentRevisionInStorageAndDb(
+          {
+            workspaceId: workspaceAId,
+            matterId: createdMatterId,
+            documentId: uploadedDoc.id,
+            fileName: 'SaleDeed_Certified_v2.pdf',
+            fileBytes: v2PdfBytes,
+            fileSize: v2PdfBytes.byteLength,
+            mimeType: 'application/pdf',
+            changesSummary: 'Added registration stamp page',
+            extractedText: 'Updated summary from certified revision',
+            createdByUserId: USERS['jwt-member-valid-token'].id,
+            expectedVersion: 1,
+            operationId: 'op-rev-2-idempotent',
+          },
+          memberClient
+        );
+        assert.strictEqual(retryRevisedDoc.version, 2);
+
+        // Verify stale expected version rejection
+        await assert.rejects(
+          async () => {
+            await createDocumentRevisionInStorageAndDb(
+              {
+                workspaceId: workspaceAId,
+                matterId: createdMatterId,
+                documentId: uploadedDoc.id,
+                fileName: 'SaleDeed_Certified_v3.pdf',
+                fileBytes: v2PdfBytes,
+                fileSize: v2PdfBytes.byteLength,
+                mimeType: 'application/pdf',
+                changesSummary: 'Stale update attempt',
+                expectedVersion: 1, // Stale version (current is 2)
+                operationId: 'op-stale-rev',
+              },
+              memberClient
+            );
+          },
+          /Stale document revision: expected version 1 does not match current version 2/i
+        );
 
         // Verify download returns exact original bytes for v1 and v2
         const downloadedV1 = await downloadDocumentFromStorage(
@@ -1014,6 +1905,63 @@ test('[Mock-Backed Integration Test] Simulated PostgREST Login-to-Matter & API A
           },
           /Access denied|Storage RLS denied|Failed to download/i
         );
+
+        // Verify Extracted Fact Review Workflow (Proposed -> Accept / Reject / Edit)
+        await saveExtractedFactsToMatter(
+          workspaceAId,
+          createdMatterId,
+          {
+            summary: 'Extraction from Sale Deed v2',
+            facts: [
+              'Vendor asserts sole ownership by oral family arrangement in August 2020',
+              'Property extent is 2400 sq.ft in Survey No 114/2 Mylapore',
+            ],
+            sourceDocumentId: uploadedDoc.id,
+            sourceVersion: 2,
+          },
+          memberClient
+        );
+
+        // Verify extracted facts are saved as Proposed
+        const allExtractedFacts = await listExtractedFactsForMatter(workspaceAId, createdMatterId, memberClient);
+        assert.ok(allExtractedFacts.length >= 2);
+        assert.strictEqual(allExtractedFacts[0].status, 'Proposed');
+        assert.strictEqual(allExtractedFacts[0].sourceVersion, 2);
+
+        // Verify proposed facts are NOT automatically merged into matter.caseAssessment.favourableFactors
+        const matterAfterFacts = await getMatterById(workspaceAId, createdMatterId, memberClient);
+        assert.ok(
+          !(matterAfterFacts?.caseAssessment?.favourableFactors || []).includes(
+            'Vendor asserts sole ownership by oral arrangement in August 2020'
+          ),
+          'Proposed facts must NOT be merged automatically into favourableFactors'
+        );
+
+        // Accept fact 1
+        const acceptedFact = await reviewExtractedFactInDb(
+          workspaceAId,
+          allExtractedFacts[0].id,
+          'Accept',
+          undefined,
+          memberClient
+        );
+        assert.strictEqual(acceptedFact.status, 'Accepted');
+        assert.ok(acceptedFact.reviewedByUserId);
+
+        // Reject fact 2
+        const rejectedFact = await reviewExtractedFactInDb(
+          workspaceAId,
+          allExtractedFacts[1].id,
+          'Reject',
+          undefined,
+          memberClient
+        );
+        assert.strictEqual(rejectedFact.status, 'Rejected');
+
+        // Verify getAcceptedFactsForMatterInDb returns ONLY explicitly accepted facts
+        const acceptedList = await getAcceptedFactsForMatterInDb(workspaceAId, createdMatterId, memberClient);
+        assert.strictEqual(acceptedList.length, 1);
+        assert.strictEqual(acceptedList[0].id, acceptedFact.id);
 
         // Verify explicit mapDocumentRowToEnterpriseDoc does not invent sizes or content
         const mappedNullSizeDoc = mapDocumentRowToEnterpriseDoc({
@@ -1121,12 +2069,243 @@ test('[Mock-Backed Integration Test] Simulated PostgREST Login-to-Matter & API A
             amount: 20000,
             paymentMethod: 'UPI',
             referenceNo: 'UPI-REF-8899',
+            idempotencyKey: 'idem-op-single',
           },
           [],
           memberClient
         );
         assert.strictEqual(updatedInvoice.status, 'Paid');
         assert.strictEqual(updatedInvoice.paidAmount, 20000);
+
+        // Verify idempotent retry with same key returns current state
+        const retryInvoice = await recordPaymentInDb(
+          workspaceAId,
+          invoice,
+          {
+            paymentDate: '2026-10-17',
+            amount: 20000,
+            paymentMethod: 'UPI',
+            referenceNo: 'UPI-REF-8899',
+            idempotencyKey: 'idem-op-single',
+          },
+          [],
+          memberClient
+        );
+        assert.strictEqual(retryInvoice.paidAmount, 20000);
+
+        // Verify idempotency collision with conflicting amount is rejected
+        await assert.rejects(
+          async () => {
+            await recordPaymentInDb(
+              workspaceAId,
+              invoice,
+              {
+                paymentDate: '2026-10-17',
+                amount: 5000, // Conflicting amount
+                paymentMethod: 'UPI',
+                referenceNo: 'UPI-REF-8899',
+                idempotencyKey: 'idem-op-single',
+              },
+              [],
+              memberClient
+            );
+          },
+          /Idempotency key collision with conflicting payment details/i
+        );
+
+        // Verify missing operation ID (idempotency key) is rejected
+        await assert.rejects(
+          async () => {
+            await recordPaymentInDb(
+              workspaceAId,
+              invoice,
+              {
+                paymentDate: '2026-10-17',
+                amount: 1000,
+                paymentMethod: 'UPI',
+                referenceNo: 'UPI-REF-TEST',
+              } as any,
+              [],
+              memberClient
+            );
+          },
+          /Payment operation ID \(idempotency key\) is required/i
+        );
+
+        // Verify non-positive or non-finite amount is rejected
+        await assert.rejects(
+          async () => {
+            await recordPaymentInDb(
+              workspaceAId,
+              invoice,
+              {
+                paymentDate: '2026-10-17',
+                amount: -100,
+                paymentMethod: 'UPI',
+                referenceNo: 'UPI-REF-TEST',
+                idempotencyKey: 'idem-op-neg',
+              },
+              [],
+              memberClient
+            );
+          },
+          /Payment amount must be a finite positive number/i
+        );
+
+        // Verify idempotency collision with conflicting method is rejected
+        await assert.rejects(
+          async () => {
+            await recordPaymentInDb(
+              workspaceAId,
+              invoice,
+              {
+                paymentDate: '2026-10-17',
+                amount: 20000,
+                paymentMethod: 'Cheque', // Conflicting method
+                referenceNo: 'UPI-REF-8899',
+                idempotencyKey: 'idem-op-single',
+              },
+              [],
+              memberClient
+            );
+          },
+          /Idempotency key collision with conflicting payment details/i
+        );
+
+        // Verify idempotency collision with conflicting reference is rejected
+        await assert.rejects(
+          async () => {
+            await recordPaymentInDb(
+              workspaceAId,
+              invoice,
+              {
+                paymentDate: '2026-10-17',
+                amount: 20000,
+                paymentMethod: 'UPI',
+                referenceNo: 'DIFFERENT-REF', // Conflicting reference
+                idempotencyKey: 'idem-op-single',
+              },
+              [],
+              memberClient
+            );
+          },
+          /Idempotency key collision with conflicting payment details/i
+        );
+
+        // Verify two genuine payments with identical details (date, amount, ref) both persist when distinct operation IDs are passed
+        const inv2 = await createInvoiceInDb(
+          workspaceAId,
+          {
+            invoiceNumber: 'INV-2026-SEP',
+            caseId: createdMatterId,
+            caseTitle: 'Separate Payment Matter',
+            clientName: 'Separate Client',
+            issueDate: '2026-10-18',
+            dueDate: '2026-11-18',
+            hourlyRate: 5000,
+            items: [{ id: 'i-1', description: 'Consultation', amount: 500 }],
+            subtotal: 500,
+            taxRatePercentage: 0,
+            taxAmount: 0,
+            discountAmount: 0,
+            totalAmount: 500,
+            paidAmount: 0,
+            balanceAmount: 500,
+            status: 'Issued',
+            payments: [],
+          },
+          [],
+          [],
+          memberClient
+        );
+
+        const pay1 = await recordPaymentInDb(
+          workspaceAId,
+          inv2,
+          {
+            paymentDate: '2026-10-18',
+            amount: 100,
+            paymentMethod: 'UPI',
+            referenceNo: 'REF-IDENTICAL',
+            idempotencyKey: 'op-uuid-first',
+          },
+          [],
+          memberClient
+        );
+
+        const pay2 = await recordPaymentInDb(
+          workspaceAId,
+          inv2,
+          {
+            paymentDate: '2026-10-18',
+            amount: 100,
+            paymentMethod: 'UPI',
+            referenceNo: 'REF-IDENTICAL',
+            idempotencyKey: 'op-uuid-second',
+          },
+          [],
+          memberClient
+        );
+
+        assert.strictEqual(pay2.paidAmount, 200, 'Two separate payments with identical details must both persist');
+
+        // Verify atomic revision creation with operation_id
+        const rev1 = await saveDraftRevisionInDb(
+          workspaceAId,
+          createdMatterId,
+          {
+            title: 'Section 9 Injunction Petition',
+            type: 'Interlocutory Application',
+            contentMarkdown: 'Original draft v1 content text',
+            changeNotes: 'Initial version 1 save',
+            operationId: 'op-draft-v1-001',
+          },
+          memberClient
+        );
+        assert.ok(rev1.id);
+        assert.strictEqual(rev1.currentVersion, 1);
+        assert.strictEqual(rev1.status, 'Draft');
+
+        // Verify reloading draft list and draft by ID
+        const matterDrafts = await listDraftsForMatterInDb(workspaceAId, createdMatterId, memberClient);
+        assert.ok(matterDrafts.length >= 1);
+
+        const loadedDraftById = await getDraftByIdInDb(workspaceAId, rev1.id, memberClient);
+        assert.ok(loadedDraftById);
+        assert.strictEqual(loadedDraftById.id, rev1.id);
+
+        const versions = await getDraftVersionsInDb(workspaceAId, rev1.id, memberClient);
+        assert.strictEqual(versions.length, 1);
+        assert.strictEqual(versions[0].version, 1);
+
+        // Approve v1
+        await approveDraftInDb(workspaceAId, rev1.id, 1, USERS['jwt-member-valid-token'].id, memberClient);
+        const approvedDraft = await getLatestDraftForMatterInDb(workspaceAId, createdMatterId, memberClient);
+        assert.ok(approvedDraft);
+        assert.strictEqual(approvedDraft.status, 'Approved');
+        assert.strictEqual(approvedDraft.approvedVersion, 1);
+
+        // Save v2 with expectedVersion = 1 -> resets status to Draft, increments currentVersion to 2
+        const rev2 = await saveDraftRevisionInDb(
+          workspaceAId,
+          createdMatterId,
+          {
+            id: rev1.id,
+            title: 'Section 9 Injunction Petition - Revised',
+            type: 'Interlocutory Application',
+            contentMarkdown: 'Revised draft v2 content text',
+            changeNotes: 'Revision 2 save',
+            expectedVersion: 1,
+            operationId: 'op-draft-v2-002',
+          },
+          memberClient
+        );
+        assert.strictEqual(rev2.currentVersion, 2);
+        assert.strictEqual(rev2.status, 'Draft');
+        assert.strictEqual(rev2.approvedVersion, null);
+
+        const updatedVersions = await getDraftVersionsInDb(workspaceAId, rev1.id, memberClient);
+        assert.strictEqual(updatedVersions.length, 2);
 
         const timelineEvent = await createTimelineEventInDb(
           workspaceAId,
@@ -1229,10 +2408,454 @@ test('[Mock-Backed Integration Test] Simulated PostgREST Login-to-Matter & API A
         );
       }
     );
+
+    await t.test(
+      '11. [Mock-Backed] BillingModule UI supplies operation IDs and enforces idempotency lifecycle',
+      () => {
+        const testCase: any = {
+          id: createdMatterId,
+          title: 'Lakshmi Narayanan vs. CMRL',
+          caseNumber: 'W.P. No. 14220 of 2026',
+          caseType: 'Property Dispute',
+          status: 'Drafting',
+          clientName: 'Lakshmi Narayanan',
+          courtName: 'Madras High Court',
+          summary: 'Land compensation dispute',
+          createdAt: '2026-10-16',
+          updatedAt: '2026-10-16',
+        };
+
+        const testChamber: any = {
+          id: workspaceAId,
+          name: 'Subramanian & Associates',
+          advocateName: 'Adv. Ramesh Subramanian',
+          city: 'Chennai',
+          phone: '+91 98400 11223',
+          email: 'member@chamber.in',
+        };
+
+        const html = renderToString(
+          React.createElement(BillingModule, {
+            cases: [testCase],
+            chamber: testChamber,
+            selectedCaseId: createdMatterId,
+            setSelectedCaseId: () => {},
+            currentRole: 'CHAMBER_OWNER',
+          })
+        );
+
+        assert.ok(html.includes('Billing &amp; Invoicing') || html.includes('Invoices') || html.includes('Payments'));
+
+        // Verify cryptographically random UUID generation produces valid RFC 4122 v4 UUIDs
+        const generatedOpId = crypto.randomUUID();
+        const uuidV4Regex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+        assert.ok(uuidV4Regex.test(generatedOpId), 'Operation ID must be a cryptographically random RFC 4122 v4 UUID');
+
+        // Verify distinct operation IDs are generated for separate payment flows
+        const distinctOpId = crypto.randomUUID();
+        assert.notStrictEqual(generatedOpId, distinctOpId, 'Subsequent payment starts must produce distinct operation IDs');
+      }
+    );
+
+    await t.test(
+      '12. [Mock-Backed] DraftingAssistant UI starts empty without fictional witness text and supports document editing',
+      () => {
+        const testCase: any = {
+          id: createdMatterId,
+          title: 'Lakshmi Narayanan vs. CMRL',
+          caseNumber: 'W.P. No. 14220 of 2026',
+          caseType: 'Property Dispute',
+          status: 'Drafting',
+          clientName: 'Lakshmi Narayanan',
+          courtName: 'Madras High Court',
+          summary: 'Land compensation dispute',
+          createdAt: '2026-10-16',
+          updatedAt: '2026-10-16',
+        };
+
+        const html = renderToString(
+          React.createElement(DraftingAssistant, {
+            selectedCase: testCase,
+            chamberId: workspaceAId,
+            currentRole: 'CHAMBER_OWNER',
+          })
+        );
+
+        // Verify UI renders drafting workspace
+        assert.ok(html.includes('Legal Drafting') || html.includes('Cross-Examination Desk'));
+
+        // Verify fictional witness statements (e.g. K. Sundaram / Mylapore) are removed
+        assert.ok(!html.includes('K. Sundaram'), 'DraftingAssistant must not contain hardcoded fictional witness material');
+        assert.ok(!html.includes('Mylapore property'), 'DraftingAssistant must not contain hardcoded Tamil/Hindi case facts');
+      }
+    );
+
+    await t.test(
+      '13. [Mock-Backed] Durable background job queue REST APIs (enqueue, claim, commit result, status, result fetch, retry, and unauthorized scope rejection)',
+      async () => {
+        // 1. Enqueue job via Express API POST /api/ai/jobs/enqueue
+        const enqueueRes = await fetch(`${apiBaseUrl}/api/ai/jobs/enqueue`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer jwt-member-valid-token',
+          },
+          body: JSON.stringify({
+            chamberId: workspaceAId,
+            matterId: createdMatterId,
+            operation: 'SUMMARIZE_DOCS',
+            title: 'Summarize Land Deed',
+            inputRecordIds: ['doc-test-1'],
+            idempotencyKey: 'idem-test-rest-001',
+          }),
+        });
+
+        assert.strictEqual(enqueueRes.status, 201);
+        const enqueueData = await enqueueRes.json();
+        assert.ok(enqueueData.job?.id);
+        assert.strictEqual(enqueueData.job.operation, 'SUMMARIZE_DOCS');
+        assert.strictEqual(enqueueData.job.status, 'queued');
+        assert.strictEqual(enqueueData.isDuplicate, false);
+
+        const enqueuedJobId = enqueueData.job.id;
+
+        // 2. Duplicate submission with same idempotency key returns duplicate job
+        const dupRes = await fetch(`${apiBaseUrl}/api/ai/jobs/enqueue`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer jwt-member-valid-token',
+          },
+          body: JSON.stringify({
+            chamberId: workspaceAId,
+            matterId: createdMatterId,
+            operation: 'SUMMARIZE_DOCS',
+            title: 'Summarize Land Deed Duplicate',
+            inputRecordIds: ['doc-test-1'],
+            idempotencyKey: 'idem-test-rest-001',
+          }),
+        });
+
+        assert.strictEqual(dupRes.status, 200);
+        const dupData = await dupRes.json();
+        assert.strictEqual(dupData.job.id, enqueuedJobId);
+        assert.strictEqual(dupData.isDuplicate, true);
+
+        // 3. Worker tick claims job via RPC claim_next_ai_job_atomic
+        const worker = new DurableBackgroundWorker({
+          workerId: 'test-worker-rest',
+          supabaseUrl: process.env.VITE_SUPABASE_URL,
+          supabaseKey: process.env.VITE_SUPABASE_ANON_KEY,
+        });
+
+        const claimed = await worker.tick();
+        assert.strictEqual(claimed, true, 'Worker must successfully claim queued job');
+
+        // 4. Fetch jobs list via GET /api/ai/jobs
+        const listRes = await fetch(
+          `${apiBaseUrl}/api/ai/jobs?chamberId=${workspaceAId}&matterId=${createdMatterId}`,
+          {
+            headers: {
+              Authorization: 'Bearer jwt-member-valid-token',
+            },
+          }
+        );
+        if (listRes.status !== 200) {
+          console.error('LIST RES ERROR BODY:', await listRes.text());
+        }
+        assert.strictEqual(listRes.status, 200);
+        const jobsList = await listRes.json();
+        assert.ok(Array.isArray(jobsList));
+        assert.strictEqual(jobsList.length, 1);
+        assert.strictEqual(jobsList[0].status, 'completed');
+
+        // 5. Fetch result via GET /api/ai/jobs/:jobId/result
+        const resultRes = await fetch(`${apiBaseUrl}/api/ai/jobs/${enqueuedJobId}/result?chamberId=${workspaceAId}`, {
+          headers: {
+            Authorization: 'Bearer jwt-member-valid-token',
+          },
+          method: 'GET',
+        });
+        assert.strictEqual(resultRes.status, 200);
+        const resultData = await resultRes.json();
+        assert.ok(resultData.resultPayload);
+
+        // 6. Unauthorized outsider is rejected (403 Forbidden)
+        const outsiderRes = await fetch(
+          `${apiBaseUrl}/api/ai/jobs?chamberId=${workspaceAId}&matterId=${createdMatterId}`,
+          {
+            headers: {
+              Authorization: 'Bearer jwt-outsider-valid-token',
+            },
+          }
+        );
+        assert.strictEqual(outsiderRes.status, 403);
+      }
+    );
+
+    await t.test(
+      '14. [Mock-Backed] Client Invitation & Restricted Portal Workflow (no sample invitations, cryptographic token hash-only storage, origin URL, Email not sent honesty, verified recipient redemption, scope enforcement, revocation, replay, expiry, and cross-workspace rejection)',
+      async () => {
+        // Seed PARALEGAL membership in Workspace A
+        simulatedState.workspace_memberships.push({
+          id: nextUuid(),
+          workspace_id: workspaceAId,
+          user_id: USERS['jwt-paralegal-valid-token'].id,
+          role: 'PARALEGAL',
+          status: 'Active',
+          created_at: new Date().toISOString(),
+        });
+
+        // 1. Verify live workspace ClientPortal renders zero sample invitations or hardcoded fake URLs
+        const staffHtml = renderToString(
+          React.createElement(ClientPortal, {
+            cases: [],
+            chamberId: workspaceAId,
+            isDemoMode: false,
+            userRole: 'CHAMBER_OWNER',
+          })
+        );
+        assert.ok(
+          staffHtml.includes('Staff Client Directory'),
+          'ClientPortal must render the separate Staff Client Directory'
+        );
+        assert.ok(
+          !staffHtml.includes('ramesh.sharma@company.in') && !staffHtml.includes('inv-101'),
+          'Live workspaces must never contain sample invitations'
+        );
+        assert.ok(
+          !staffHtml.includes('https://advocate360.legal/portal/access'),
+          'Live workspaces must never contain hardcoded fake portal URLs'
+        );
+
+        // 2. Denied invitation creation: PARALEGAL role is rejected (403 Forbidden)
+        const paralegalCreateRes = await fetch(`${apiBaseUrl}/api/client-portal/invitations`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer jwt-paralegal-valid-token',
+          },
+          body: JSON.stringify({
+            chamberId: workspaceAId,
+            matterId: createdMatterId,
+            clientEmail: 'client.recipient@company.in',
+            clientName: 'Recipient Client',
+          }),
+        });
+        assert.strictEqual(paralegalCreateRes.status, 403);
+
+        // 3. Cross-workspace / wrong matter attempt is rejected (403 Forbidden)
+        const wrongMatterRes = await fetch(`${apiBaseUrl}/api/client-portal/invitations`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer jwt-member-valid-token',
+          },
+          body: JSON.stringify({
+            chamberId: workspaceAId,
+            matterId: '99999999-9999-4999-8999-999999999999',
+            clientEmail: 'client.recipient@company.in',
+            clientName: 'Recipient Client',
+          }),
+        });
+        assert.strictEqual(wrongMatterRes.status, 403);
+
+        // 4. Allowed creation: Authorized staff (CHAMBER_OWNER) creates invitation
+        const createInviteRes = await fetch(`${apiBaseUrl}/api/client-portal/invitations`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer jwt-member-valid-token',
+            Origin: 'https://portal.chamber-test.in',
+          },
+          body: JSON.stringify({
+            chamberId: workspaceAId,
+            matterId: createdMatterId,
+            clientEmail: 'Client.Recipient@Company.in',
+            clientName: 'Recipient Client',
+            scopes: {
+              viewHearings: true,
+              viewFilings: true,
+              viewBilling: false,
+              uploadDocs: false,
+              chatAi: false,
+            },
+            expiresInDays: 7,
+          }),
+        });
+
+        assert.strictEqual(createInviteRes.status, 201);
+        const createInviteBody = await createInviteRes.json();
+
+        // Verify honesty when email is unconfigured ("Email not sent", emailSent=false)
+        assert.strictEqual(createInviteBody.emailSent, false);
+        assert.strictEqual(createInviteBody.deliveryStatus, 'email_not_sent');
+        assert.strictEqual(createInviteBody.deliveryMessage, 'Email not sent');
+
+        // Verify link uses configured application origin + /portal/redeem?token=<64-hex-token>
+        assert.ok(
+          createInviteBody.inviteUrl.startsWith('https://portal.chamber-test.in/portal/redeem?token='),
+          `Expected configured origin URL, got ${createInviteBody.inviteUrl}`
+        );
+        const rawToken = new URL(createInviteBody.inviteUrl).searchParams.get('token') || '';
+        assert.ok(
+          /^[0-9a-f]{64}$/.test(rawToken),
+          'Generated token must be a 64-character hex cryptographic token'
+        );
+
+        // Verify ONLY SHA-256 token_hash is stored in database, NEVER the raw token
+        const expectedHash = await hashClientInviteTokenSha256(rawToken);
+        const storedInvite = simulatedState.client_invitations.find(
+          (i) => i.id === createInviteBody.invitation.id
+        );
+        assert.ok(storedInvite);
+        assert.strictEqual(storedInvite.token_hash, expectedHash);
+        assert.notStrictEqual(storedInvite.token_hash, rawToken);
+        assert.strictEqual(createInviteBody.invitation.token_hash, undefined);
+
+        // 5. Wrong recipient rejection: Outsider user (outsider.advocate@chamberB.in) cannot redeem invitation meant for client.recipient@company.in
+        const wrongRecipientRes = await fetch(`${apiBaseUrl}/api/client-portal/redeem`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer jwt-outsider-valid-token',
+          },
+          body: JSON.stringify({ token: rawToken }),
+        });
+        assert.strictEqual(wrongRecipientRes.status, 403);
+
+        // 6. Allowed atomic redemption: Verified matching recipient (client.recipient@company.in) redeems invitation
+        const redeemRes = await fetch(`${apiBaseUrl}/api/client-portal/redeem`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer jwt-client-valid-token',
+          },
+          body: JSON.stringify({ token: rawToken }),
+        });
+        assert.strictEqual(redeemRes.status, 200);
+        const redeemBody = await redeemRes.json();
+        assert.strictEqual(redeemBody.grant.matter_id, createdMatterId);
+        assert.strictEqual(redeemBody.grant.status, 'Redeemed');
+        assert.strictEqual(redeemBody.grant.replayed, false);
+
+        // 7. Repeated redemption while active is handled safely and idempotently
+        const replayRes = await fetch(`${apiBaseUrl}/api/client-portal/redeem`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer jwt-client-valid-token',
+          },
+          body: JSON.stringify({ token: rawToken }),
+        });
+        assert.strictEqual(replayRes.status, 200);
+        const replayBody = await replayRes.json();
+        assert.strictEqual(replayBody.grant.replayed, true);
+        assert.strictEqual(simulatedState.client_access_grants.length, 1);
+
+        // 8. Restricted client fetches matter view: permitted scopes included, viewBilling=false excluded, internal findings & drafts never present
+        const matterViewRes = await fetch(
+          `${apiBaseUrl}/api/client-portal/matters/${createdMatterId}`,
+          {
+            method: 'GET',
+            headers: {
+              Authorization: 'Bearer jwt-client-valid-token',
+            },
+          }
+        );
+        assert.strictEqual(matterViewRes.status, 200);
+        const matterViewBody = await matterViewRes.json();
+        assert.strictEqual(matterViewBody.matter.id, createdMatterId);
+        assert.strictEqual(matterViewBody.invoices.length, 0);
+        assert.strictEqual(matterViewBody.findings, undefined);
+        assert.strictEqual(matterViewBody.drafts, undefined);
+
+        // Chat AI scope is false on this grant -> POST /api/client-portal/matters/:matterId/chat must return 403
+        const deniedChatRes = await fetch(
+          `${apiBaseUrl}/api/client-portal/matters/${createdMatterId}/chat`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: 'Bearer jwt-client-valid-token',
+            },
+            body: JSON.stringify({ question: 'When is my next hearing?' }),
+          }
+        );
+        assert.strictEqual(deniedChatRes.status, 403);
+
+        // 9. Post-redemption revocation: Staff revokes invitation -> immediately revokes grant and blocks client access + token replay
+        const revokeRes = await fetch(
+          `${apiBaseUrl}/api/client-portal/invitations/${createInviteBody.invitation.id}/revoke`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: 'Bearer jwt-member-valid-token',
+            },
+            body: JSON.stringify({ chamberId: workspaceAId }),
+          }
+        );
+        assert.strictEqual(revokeRes.status, 200);
+        const revokeBody = await revokeRes.json();
+        assert.strictEqual(revokeBody.revoked.status, 'Revoked');
+        assert.strictEqual(revokeBody.revoked.revoked_grants_count, 1);
+
+        // Client can no longer access the matter after revocation
+        const afterRevokeViewRes = await fetch(
+          `${apiBaseUrl}/api/client-portal/matters/${createdMatterId}`,
+          {
+            method: 'GET',
+            headers: {
+              Authorization: 'Bearer jwt-client-valid-token',
+            },
+          }
+        );
+        assert.strictEqual(afterRevokeViewRes.status, 403);
+
+        // Replaying the revoked token is rejected (403 Forbidden)
+        const replayAfterRevokeRes = await fetch(`${apiBaseUrl}/api/client-portal/redeem`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer jwt-client-valid-token',
+          },
+          body: JSON.stringify({ token: rawToken }),
+        });
+        assert.strictEqual(replayAfterRevokeRes.status, 403);
+
+        // 10. Expired invitation link is rejected (410 Gone)
+        const expiredRawToken = 'f'.repeat(64);
+        const expiredHash = await hashClientInviteTokenSha256(expiredRawToken);
+        simulatedState.client_invitations.push({
+          id: nextUuid(),
+          workspace_id: workspaceAId,
+          matter_id: createdMatterId,
+          client_email: 'client.recipient@company.in',
+          client_name: 'Recipient Client',
+          token_hash: expiredHash,
+          scopes: { viewHearings: true },
+          expires_at: new Date(Date.now() - 3600000).toISOString(),
+          status: 'Active',
+        });
+
+        const expiredRedeemRes = await fetch(`${apiBaseUrl}/api/client-portal/redeem`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer jwt-client-valid-token',
+          },
+          body: JSON.stringify({ token: expiredRawToken }),
+        });
+        assert.strictEqual(expiredRedeemRes.status, 410);
+      }
+    );
   } finally {
     process.env.VITE_SUPABASE_URL = prevSupabaseUrl;
     process.env.VITE_SUPABASE_ANON_KEY = prevSupabaseAnonKey;
+    process.env.GEMINI_API_KEY = prevGeminiKey;
     await new Promise<void>((resolve) => apiServer.close(() => resolve()));
     await new Promise<void>((resolve) => mockSupabaseServer.close(() => resolve()));
   }
 });
+

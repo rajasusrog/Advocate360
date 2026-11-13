@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   X, 
   Bot, 
@@ -17,12 +17,15 @@ import {
   AlertTriangle, 
   ArrowRight,
   ShieldCheck,
-  Building
+  Building,
+  RefreshCw,
+  Clock
 } from 'lucide-react';
 import { CaseFile } from '../types';
 import { apiPost } from '../lib/api';
-import { assignQuickNoteToMatter, saveExtractedFactsToMatter, useMatterDocuments } from '../lib/useMatterData';
-import { jobEngine } from '../lib/backgroundJobs';
+import { assignQuickNoteToMatter, useMatterDocuments } from '../lib/useMatterData';
+import { useDurableJobs } from '../lib/useDurableJobs';
+import { JobType } from '../lib/backgroundJobs';
 
 interface AskAdvocateAssistantProps {
   isOpen: boolean;
@@ -40,6 +43,7 @@ export interface AssistantMessage {
   missingContext?: string[];
   suggestedTask?: string;
   savedToMatter?: boolean;
+  jobId?: string;
 }
 
 export const AskAdvocateAssistant: React.FC<AskAdvocateAssistantProps> = ({
@@ -49,14 +53,19 @@ export const AskAdvocateAssistant: React.FC<AskAdvocateAssistantProps> = ({
   chamberId
 }) => {
   const matterId = selectedCase?.id;
-  const { documents } = useMatterDocuments(isOpen ? (chamberId || '') : '', matterId);
+  const activeChamberId = chamberId || selectedCase?.chamberId;
+  const { documents } = useMatterDocuments(isOpen ? (activeChamberId || '') : '', matterId);
+  const { jobs, activeJobs, completedJobs, failedJobs, enqueue, fetchResult, retry, refresh } = useDurableJobs(
+    activeChamberId,
+    matterId
+  );
 
   // Selected Context
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
   const [selectedFacts, setSelectedFacts] = useState<string[]>([]);
   const [showContextSelector, setShowContextSelector] = useState<boolean>(false);
 
-  // Messages State (declared before useEffect that updates it)
+  // Messages State
   const [messages, setMessages] = useState<AssistantMessage[]>([
     {
       id: 'msg-init',
@@ -74,8 +83,8 @@ export const AskAdvocateAssistant: React.FC<AskAdvocateAssistantProps> = ({
   const [isSending, setIsSending] = useState(false);
   const [saveToast, setSaveToast] = useState<string | null>(null);
 
-  // Sync assistant scope with route matter change (handles opening, closing, and switching matters)
-  React.useEffect(() => {
+  // Sync assistant scope with route matter change
+  useEffect(() => {
     setSelectedDocIds([]);
     setSelectedFacts([]);
     if (selectedCase) {
@@ -103,27 +112,57 @@ export const AskAdvocateAssistant: React.FC<AskAdvocateAssistantProps> = ({
     }
   }, [selectedCase?.id]);
 
+  // Restore completed durable job results after page reload or job completion
+  useEffect(() => {
+    if (!isOpen || completedJobs.length === 0) return;
+
+    completedJobs.forEach(async (job) => {
+      const existingMsg = messages.find(m => m.jobId === job.id || m.jobId === job.jobId);
+      if (!existingMsg) {
+        const resultRes = await fetchResult(job.id);
+        const resultText = resultRes?.resultPayload?.reply || 
+          resultRes?.resultPayload?.summary || 
+          (resultRes?.resultPayload ? JSON.stringify(resultRes.resultPayload, null, 2) : 'Durable worker completed execution.');
+
+        setMessages(prev => {
+          if (prev.some(m => m.jobId === job.id || m.jobId === job.jobId)) return prev;
+          return [
+            ...prev,
+            {
+              id: `job-res-${job.id}`,
+              sender: 'ai',
+              text: `**[Durable Task Result: ${job.title}]**\n\n${resultText}`,
+              time: new Date(job.timestamps.completedAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              sourcesUsed: selectedCase ? [`Matter: ${selectedCase.title}`] : ['Durable Job Engine'],
+              jobId: job.id,
+            }
+          ];
+        });
+      }
+    });
+  }, [completedJobs, isOpen]);
+
   if (!isOpen) return null;
 
   // Human-Readable Litigation Tasks
   const QUICK_TASKS = [
-    { label: 'Summarize Documents', icon: FileSearch, taskType: 'Summarize these documents' },
-    { label: 'Extract Facts & Dates', icon: GitCommit, taskType: 'Extract facts and dates' },
-    { label: 'Identify Contradictions', icon: AlertTriangle, taskType: 'Identify potential contradictions' },
-    { label: 'Find Missing Info', icon: HelpCircle, taskType: 'Find missing information' },
-    { label: 'Prepare First Draft', icon: FileText, taskType: 'Prepare a first draft' },
-    { label: 'Prepare Hearing Brief', icon: Scale, taskType: 'Prepare a hearing brief' }
+    { label: 'Summarize Documents', icon: FileSearch, taskType: 'Summarize these documents', op: 'SUMMARIZE_DOCS' as JobType },
+    { label: 'Extract Facts & Dates', icon: GitCommit, taskType: 'Extract facts and dates', op: 'EXTRACT_FACTS_DATES' as JobType },
+    { label: 'Identify Contradictions', icon: AlertTriangle, taskType: 'Identify potential contradictions', op: 'FIND_CONTRADICTIONS' as JobType },
+    { label: 'Find Missing Info', icon: HelpCircle, taskType: 'Find missing information', op: 'LARGE_DOC_ANALYSIS' as JobType },
+    { label: 'Prepare First Draft', icon: FileText, taskType: 'Prepare a first draft', op: 'AI_REASONING_CHAIN' as JobType },
+    { label: 'Prepare Hearing Brief', icon: Scale, taskType: 'Prepare a hearing brief', op: 'PREPARE_HEARING_BRIEF' as JobType }
   ];
 
-  const handleRunTask = (taskType: string) => {
+  const handleRunTask = (taskType: string, op: JobType) => {
     const promptText = selectedDocIds.length > 0
       ? `${taskType} using selected ${selectedDocIds.length} document(s)`
       : `${taskType} for ${selectedCase ? selectedCase.title : 'active scope'}`;
     
-    handleSend(promptText, taskType);
+    handleSend(promptText, taskType, op);
   };
 
-  const handleSend = async (overridePrompt?: string, taskType?: string) => {
+  const handleSend = async (overridePrompt?: string, taskType?: string, targetOp?: JobType) => {
     const userText = (overridePrompt || inputMsg).trim();
     if (!userText || isSending) return;
 
@@ -140,17 +179,26 @@ export const AskAdvocateAssistant: React.FC<AskAdvocateAssistantProps> = ({
     setMessages(prev => [...prev, userMsgObj]);
     setIsSending(true);
 
-    // Enqueue job in background job engine for tracking
-    const { job } = jobEngine.enqueueJob({
-      operation: 'AI_REASONING_CHAIN',
-      title: taskType || userText.substring(0, 30),
-      chamberId: chamberId || selectedCase?.chamberId || 'chamber-default',
-      matterId,
-      inputRecordIds: selectedDocIds
-    });
-    jobEngine.startJob(job.id, `Processing request: ${userText}`);
+    const resolvedChamberId = activeChamberId || 'chamber-default';
 
+    // Enqueue durable server-side background job
     try {
+      const opToRun: JobType = targetOp || 'AI_REASONING_CHAIN';
+      const { job, isDuplicate } = await enqueue({
+        operation: opToRun,
+        title: taskType || userText.substring(0, 30),
+        chamberId: resolvedChamberId,
+        matterId,
+        inputRecordIds: selectedDocIds,
+        idempotencyKey: `${resolvedChamberId}_${matterId || 'general'}_${opToRun}_${selectedDocIds.slice().sort().join(',')}`,
+      });
+
+      if (isDuplicate) {
+        setSaveToast(`ℹ️ Active or completed job found for this prompt.`);
+        setTimeout(() => setSaveToast(null), 3000);
+      }
+
+      // Also invoke synchronous agent-chat endpoint for instant conversational feedback
       const selectedDocs = documents.filter(d => selectedDocIds.includes(d.id));
       const selectedDocNames = selectedDocs.map(d => d.name);
       const selectedDocContents = selectedDocs.map(d => 
@@ -162,10 +210,10 @@ export const AskAdvocateAssistant: React.FC<AskAdvocateAssistantProps> = ({
         : 'General Chamber Practice Scope';
 
       const data = await apiPost<{ reply?: string }>('/api/ai/agent-chat', {
-        agentRole: 'legal_research', // Internal agent role hidden from user
+        agentRole: 'legal_research',
         message: userText,
         caseContext: caseCtx,
-        chamberId: chamberId || selectedCase?.chamberId,
+        chamberId: resolvedChamberId,
         caseId: selectedCase?.id
       });
 
@@ -187,11 +235,11 @@ export const AskAdvocateAssistant: React.FC<AskAdvocateAssistantProps> = ({
         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         sourcesUsed,
         missingContext,
-        suggestedTask: taskType
+        suggestedTask: taskType,
+        jobId: job?.id,
       };
 
       setMessages(prev => [...prev, aiMsgObj]);
-      jobEngine.completeJob(job.id, [`msg-${aiMsgObj.id}`], 'Completed analysis successfully');
     } catch (err: any) {
       const errMsg = `Unable to generate AI response: ${err.message || 'Service unavailable'}. Please check credentials or retry.`;
       setMessages(prev => [...prev, { 
@@ -200,14 +248,13 @@ export const AskAdvocateAssistant: React.FC<AskAdvocateAssistantProps> = ({
         text: errMsg, 
         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) 
       }]);
-      jobEngine.failJob(job.id, err.message || 'Service error');
     } finally {
       setIsSending(false);
     }
   };
 
   const handleSaveAnswerToMatter = async (msg: AssistantMessage) => {
-    if (!selectedCase || !chamberId) {
+    if (!selectedCase || !activeChamberId) {
       setSaveToast('⚠️ Select a specific matter to save answers.');
       setTimeout(() => setSaveToast(null), 3000);
       return;
@@ -215,7 +262,7 @@ export const AskAdvocateAssistant: React.FC<AskAdvocateAssistantProps> = ({
 
     try {
       await assignQuickNoteToMatter(
-        chamberId,
+        activeChamberId,
         selectedCase.id,
         msg.suggestedTask ? `AI Assistant: ${msg.suggestedTask}` : 'Advocate360 AI Response',
         msg.text
@@ -240,12 +287,21 @@ export const AskAdvocateAssistant: React.FC<AskAdvocateAssistantProps> = ({
           <Bot className="w-5 h-5 text-amber-400" />
           <div>
             <span className="font-serif italic font-bold text-base block leading-none">Ask Advocate360</span>
-            <span className="text-[9px] font-mono text-slate-400 uppercase">Litigation AI Assistant</span>
+            <span className="text-[9px] font-mono text-slate-400 uppercase">Durable Server-Side AI Queue</span>
           </div>
         </div>
-        <button onClick={onClose} className="p-1 text-slate-300 hover:text-white transition-colors cursor-pointer">
-          <X className="w-5 h-5" />
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => refresh()}
+            title="Refresh Durable Jobs Queue"
+            className="p-1 text-slate-300 hover:text-amber-400 transition-colors cursor-pointer"
+          >
+            <RefreshCw className="w-4 h-4" />
+          </button>
+          <button onClick={onClose} className="p-1 text-slate-300 hover:text-white transition-colors cursor-pointer">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
       </div>
 
       {/* Explicit Active Scope Banner */}
@@ -279,6 +335,42 @@ export const AskAdvocateAssistant: React.FC<AskAdvocateAssistantProps> = ({
         <div className="p-2.5 bg-[#1A1A1A] text-amber-400 font-mono text-xs border-b border-[#1A1A1A] flex items-center gap-2 animate-in fade-in">
           <ShieldCheck className="w-4 h-4 text-emerald-400" />
           <span>{saveToast}</span>
+        </div>
+      )}
+
+      {/* Active Durable Background Worker Status Bar */}
+      {activeJobs.length > 0 && (
+        <div className="p-2 bg-amber-50 border-b border-amber-300 text-xs font-mono flex items-center justify-between text-amber-900">
+          <div className="flex items-center gap-2">
+            <Clock className="w-3.5 h-3.5 text-amber-700 animate-spin" />
+            <span className="font-bold text-[10px] uppercase">
+              {activeJobs.length} Durable Job(s) In Progress...
+            </span>
+          </div>
+          <span className="text-[9px] bg-amber-200 text-amber-900 font-bold px-1.5 py-0.5 border border-amber-400">
+            WORKER ACTIVE
+          </span>
+        </div>
+      )}
+
+      {/* Failed Worker Jobs / Service Disruption Banner */}
+      {failedJobs.length > 0 && (
+        <div className="p-2.5 bg-red-50 border-b border-red-300 text-xs font-mono text-red-900 space-y-1">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1.5 font-bold text-[10px] uppercase">
+              <AlertCircle className="w-3.5 h-3.5 text-red-600" />
+              <span>Durable Job Disruption Detected ({failedJobs.length})</span>
+            </div>
+            <button
+              onClick={() => retry(failedJobs[0].id)}
+              className="text-[9px] bg-red-900 text-white px-2 py-0.5 font-bold uppercase hover:bg-black transition-colors cursor-pointer"
+            >
+              Retry Failed Job
+            </button>
+          </div>
+          <p className="text-[10px] italic">
+            {failedJobs[0].errorInfo?.message || 'Server worker encountered an execution failure.'}
+          </p>
         </div>
       )}
 
@@ -326,7 +418,7 @@ export const AskAdvocateAssistant: React.FC<AskAdvocateAssistantProps> = ({
             return (
               <button
                 key={idx}
-                onClick={() => handleRunTask(t.taskType)}
+                onClick={() => handleRunTask(t.taskType, t.op)}
                 disabled={isSending}
                 className="p-1.5 bg-white hover:bg-[#1A1A1A] hover:text-amber-400 text-[#1A1A1A] border border-[#1A1A1A] text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
               >

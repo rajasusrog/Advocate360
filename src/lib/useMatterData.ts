@@ -665,6 +665,7 @@ export async function uploadDocumentToStorageAndDb(
     extractedText?: string | null;
     uploadedByUserId?: string | null;
     authorName?: string;
+    operationId?: string;
   },
   client: SupabaseClient = supabase
 ): Promise<EnterpriseDoc> {
@@ -700,9 +701,12 @@ export async function uploadDocumentToStorageAndDb(
             : 0;
 
   const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
-  const uniquePrefix = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+  const attemptUuid = (typeof crypto !== 'undefined' && crypto.randomUUID) 
+    ? crypto.randomUUID() 
+    : `${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+  const operationId = params.operationId || attemptUuid;
   const storageBucket = 'matter-documents';
-  const storagePath = `${workspaceId}/${matterId}/${uniquePrefix}_v1_${safeName}`;
+  const storagePath = `${workspaceId}/${matterId}/${attemptUuid}_v1_${safeName}`;
 
   // 1. Upload original file bytes to private Supabase Storage bucket
   const { data: storageData, error: storageErr } = await client.storage
@@ -718,70 +722,42 @@ export async function uploadDocumentToStorageAndDb(
     );
   }
 
-  const processingStatus =
-    extractedText && extractedText.trim().length > 0 ? 'Processed' : 'Uploaded';
+  // 2. Commit initial document metadata and version 1 in one atomic database RPC
+  const { data: rpcRes, error: rpcErr } = await client.rpc('create_document_with_initial_version_atomic', {
+    p_workspace_id: workspaceId,
+    p_matter_id: matterId,
+    p_name: fileName.trim(),
+    p_doc_type: docType,
+    p_storage_bucket: storageBucket,
+    p_file_path: storagePath,
+    p_file_size: byteLength,
+    p_mime_type: mimeType,
+    p_changes_summary: changesSummary,
+    p_extracted_text: extractedText,
+    p_author_name: authorName,
+    p_operation_id: operationId,
+  });
 
-  // 2. Insert canonical document metadata row into `public.documents`
-  const { data: insertedDoc, error: docErr } = await client
-    .from('documents')
-    .insert({
-      workspace_id: workspaceId,
-      matter_id: matterId,
-      name: fileName.trim(),
-      doc_type: docType,
-      storage_bucket: storageBucket,
-      file_path: storagePath,
-      file_size: byteLength,
-      mime_type: mimeType,
-      extracted_text: extractedText,
-      uploaded_by_user_id: uploadedByUserId,
-      processing_status: processingStatus,
-      review_status: 'Unreviewed',
-      current_version: 1,
-    })
-    .select('*')
-    .single();
-
-  if (docErr || !insertedDoc) {
-    // Compensating cleanup of uploaded storage object
-    await client.storage.from(storageBucket).remove([storagePath]);
-    throw new Error(`Database document insert failed: ${docErr?.message || 'No row returned'}`);
+  if (rpcErr || !rpcRes) {
+    let cleanupNotice = '';
+    try {
+      const { error: remErr } = await client.storage.from(storageBucket).remove([storagePath]);
+      if (remErr) {
+        cleanupNotice = ` (Storage cleanup error: ${remErr.message})`;
+      }
+    } catch (cleanupErr: any) {
+      cleanupNotice = ` (Storage cleanup error: ${cleanupErr?.message || 'Failed to remove orphaned storage object'})`;
+    }
+    throw new Error(`Database initial document commit failed: ${rpcErr?.message || 'No payload'}${cleanupNotice}`);
   }
 
-  // 3. Insert immutable v1 record into `public.document_versions`
-  const { data: insertedVer, error: verErr } = await client
-    .from('document_versions')
-    .insert({
-      workspace_id: workspaceId,
-      document_id: insertedDoc.id,
-      version: 1,
-      file_path: storagePath,
-      file_size: byteLength,
-      mime_type: mimeType,
-      changes_summary: changesSummary,
-      extracted_text: extractedText,
-      author_name: authorName,
-      created_by_user_id: uploadedByUserId,
-    })
-    .select('*')
-    .single();
-
-  if (verErr || !insertedVer) {
-    // Compensating cleanup of document row & storage object
-    await client.from('documents').delete().eq('id', insertedDoc.id).eq('workspace_id', workspaceId);
-    await client.storage.from(storageBucket).remove([storagePath]);
-    throw new Error(
-      `Database document_versions insert failed: ${verErr?.message || 'No version row returned'}`
-    );
-  }
-
-  return mapDocumentRowToEnterpriseDoc(insertedDoc, [insertedVer]);
+  return mapDocumentRowToEnterpriseDoc(rpcRes.document, [rpcRes.version]);
 }
 
 /**
- * Commits a new immutable document version (v2, v3, etc., including rollbacks)
- * by uploading version bytes to private storage, inserting a new row in `public.document_versions`,
- * and updating `public.documents.current_version`.
+ * Commits a new immutable document version (v2, v3, etc.)
+ * by uploading version bytes to a unique storage attempt path,
+ * locking the document record in PostgreSQL, and committing version metadata transactionally.
  */
 export async function createDocumentRevisionInStorageAndDb(
   params: {
@@ -796,6 +772,8 @@ export async function createDocumentRevisionInStorageAndDb(
     extractedText?: string | null;
     createdByUserId?: string | null;
     authorName?: string;
+    expectedVersion?: number;
+    operationId?: string;
   },
   client: SupabaseClient = supabase
 ): Promise<EnterpriseDoc> {
@@ -819,24 +797,6 @@ export async function createDocumentRevisionInStorageAndDb(
     throw new Error('Revision changesSummary is required');
   }
 
-  // Fetch existing versions to determine next integer version
-  const { data: existingVersions, error: fetchVerErr } = await client
-    .from('document_versions')
-    .select('*')
-    .eq('workspace_id', workspaceId)
-    .eq('document_id', documentId)
-    .order('version', { ascending: false });
-
-  if (fetchVerErr) {
-    throw new Error(`Failed to fetch existing document versions: ${fetchVerErr.message}`);
-  }
-
-  const maxVersion =
-    existingVersions && existingVersions.length > 0
-      ? Math.max(...existingVersions.map((v: any) => Number(v.version || 1)))
-      : 1;
-  const nextVersion = maxVersion + 1;
-
   const byteLength =
     typeof params.fileSize === 'number'
       ? params.fileSize
@@ -849,11 +809,14 @@ export async function createDocumentRevisionInStorageAndDb(
             : 0;
 
   const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
-  const uniquePrefix = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+  const attemptUuid = (typeof crypto !== 'undefined' && crypto.randomUUID) 
+    ? crypto.randomUUID() 
+    : `${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+  const operationId = params.operationId || attemptUuid;
   const storageBucket = 'matter-documents';
-  const storagePath = `${workspaceId}/${matterId}/${documentId}_${uniquePrefix}_v${nextVersion}_${safeName}`;
+  const storagePath = `${workspaceId}/${matterId}/${documentId}_${attemptUuid}_${safeName}`;
 
-  // 1. Upload new version bytes to private storage
+  // 1. Upload new version bytes to private storage at a unique attempt path
   const { data: storageData, error: storageErr } = await client.storage
     .from(storageBucket)
     .upload(storagePath, fileBytes, {
@@ -867,58 +830,44 @@ export async function createDocumentRevisionInStorageAndDb(
     );
   }
 
-  // 2. Insert new immutable row in `public.document_versions`
-  const { data: newVerRow, error: insVerErr } = await client
+  // 2. Commit version metadata and document current_version pointer in one atomic DB transaction under lock
+  const { data: rpcRes, error: rpcErr } = await client.rpc('commit_document_revision_atomic', {
+    p_workspace_id: workspaceId,
+    p_matter_id: matterId,
+    p_document_id: documentId,
+    p_file_path: storagePath,
+    p_file_size: byteLength,
+    p_mime_type: mimeType,
+    p_changes_summary: changesSummary.trim(),
+    p_extracted_text: extractedText,
+    p_author_name: authorName,
+    p_expected_version: params.expectedVersion !== undefined && params.expectedVersion !== null ? Number(params.expectedVersion) : null,
+    p_operation_id: operationId,
+  });
+
+  if (rpcErr || !rpcRes) {
+    // Track uncommitted upload for safe cleanup without deleting historical committed bytes
+    let cleanupNotice = '';
+    try {
+      const { error: remErr } = await client.storage.from(storageBucket).remove([storagePath]);
+      if (remErr) {
+        cleanupNotice = ` (Storage cleanup error: ${remErr.message})`;
+      }
+    } catch (cleanupErr: any) {
+      cleanupNotice = ` (Storage cleanup error: ${cleanupErr?.message || 'Failed to remove orphaned storage object'})`;
+    }
+    throw new Error(`Document revision commit failed: ${rpcErr?.message || 'No payload'}${cleanupNotice}`);
+  }
+
+  // Fetch all version records for constructing EnterpriseDoc
+  const { data: verRows } = await client
     .from('document_versions')
-    .insert({
-      workspace_id: workspaceId,
-      document_id: documentId,
-      version: nextVersion,
-      file_path: storagePath,
-      file_size: byteLength,
-      mime_type: mimeType,
-      changes_summary: changesSummary.trim(),
-      extracted_text: extractedText,
-      author_name: authorName,
-      created_by_user_id: createdByUserId,
-    })
     .select('*')
-    .single();
-
-  if (insVerErr || !newVerRow) {
-    await client.storage.from(storageBucket).remove([storagePath]);
-    throw new Error(
-      `Failed to insert new document_versions row: ${insVerErr?.message || 'No version row'}`
-    );
-  }
-
-  const processingStatus =
-    extractedText && extractedText.trim().length > 0 ? 'Processed' : 'Uploaded';
-
-  // 3. Update canonical `public.documents` pointer to latest version
-  const { data: updatedDoc, error: updDocErr } = await client
-    .from('documents')
-    .update({
-      current_version: nextVersion,
-      file_path: storagePath,
-      file_size: byteLength,
-      mime_type: mimeType,
-      extracted_text: extractedText,
-      processing_status: processingStatus,
-      updated_at: new Date().toISOString(),
-    })
     .eq('workspace_id', workspaceId)
-    .eq('id', documentId)
-    .select('*')
-    .single();
+    .eq('document_id', documentId)
+    .order('version', { ascending: false });
 
-  if (updDocErr || !updatedDoc) {
-    throw new Error(
-      `Failed to update document current_version: ${updDocErr?.message || 'No document row'}`
-    );
-  }
-
-  return mapDocumentRowToEnterpriseDoc(updatedDoc, [newVerRow, ...(existingVersions || [])]);
+  return mapDocumentRowToEnterpriseDoc(rpcRes.document, verRows || [rpcRes.version]);
 }
 
 /**
@@ -1402,44 +1351,118 @@ export async function deleteInvoiceInDb(
 export async function recordPaymentInDb(
   workspaceId: string,
   invoice: Invoice,
-  payment: Omit<InvoicePayment, 'id' | 'invoiceId'> & { idempotencyKey?: string },
+  payment: Omit<InvoicePayment, 'id' | 'invoiceId'> & { idempotencyKey: string },
   cases: CaseFile[] = [],
   client: SupabaseClient = supabase
 ): Promise<Invoice> {
   if (!workspaceId || !invoice?.id) {
     throw new Error('workspaceId and invoice.id are required to record a payment');
   }
-  const payAmount = Number(payment.amount || 0);
-  if (payAmount <= 0) {
-    throw new Error('Payment amount must be greater than zero');
+
+  // Require operation ID explicitly; no fallback to derived strings
+  if (!payment.idempotencyKey || !payment.idempotencyKey.trim()) {
+    throw new Error('Payment operation ID (idempotency key) is required');
+  }
+  const idempotencyKey = payment.idempotencyKey.trim();
+
+  const payAmount = Number(payment.amount);
+  if (!Number.isFinite(payAmount) || payAmount <= 0) {
+    throw new Error('Payment amount must be a finite positive number');
   }
 
-  const idempotencyKey =
-    payment.idempotencyKey ||
-    `pay_${invoice.id}_${payment.paymentDate || 'date'}_${payAmount}_${payment.referenceNo || 'ref'}`;
+  const payDate = payment.paymentDate || new Date().toISOString().split('T')[0];
+  const payMethod = payment.paymentMethod || 'UPI';
+  const payRef = payment.referenceNo || null;
+  const payNotes = payment.notes || null;
 
   const { data: updatedInvRow, error } = await client.rpc('record_payment_atomic', {
     p_workspace_id: workspaceId,
     p_invoice_id: invoice.id,
     p_amount: payAmount,
-    p_payment_date: payment.paymentDate || new Date().toISOString().split('T')[0],
-    p_method: payment.paymentMethod || 'UPI',
-    p_reference_no: payment.referenceNo || null,
-    p_notes: payment.notes || null,
+    p_payment_date: payDate,
+    p_method: payMethod,
+    p_reference_no: payRef,
+    p_notes: payNotes,
     p_idempotency_key: idempotencyKey,
   });
 
   if (error || !updatedInvRow) {
+    // On concurrent conflict or collision, inspect existing payment payload
+    if (
+      error?.message?.includes('Idempotency key collision') ||
+      error?.message?.includes('duplicate key') ||
+      error?.message?.includes('unique_violation') ||
+      error?.code === '23505'
+    ) {
+      const { data: existingPayments } = await client
+        .from('payments')
+        .select('*')
+        .eq('workspace_id', workspaceId)
+        .eq('idempotency_key', idempotencyKey);
+
+      if (existingPayments && existingPayments.length > 0) {
+        const existing = existingPayments[0];
+        // Compare complete canonical payload (invoice, amount, date, method, reference, notes)
+        const isMatch =
+          existing.invoice_id === invoice.id &&
+          Number(existing.amount) === payAmount &&
+          existing.payment_date === payDate &&
+          (existing.payment_method || '') === payMethod &&
+          (existing.reference_no || null) === payRef &&
+          (existing.notes || null) === payNotes;
+
+        if (isMatch) {
+          // Exactly matching retry: fetch authoritative invoice state and return success
+          const { data: currentInv } = await client
+            .from('invoices')
+            .select('*')
+            .eq('workspace_id', workspaceId)
+            .eq('id', invoice.id)
+            .maybeSingle();
+
+          if (currentInv) {
+            let retryPayRows: any[] = [];
+            try {
+              const { data: payRows } = await client
+                .from('payments')
+                .select('*')
+                .eq('workspace_id', workspaceId)
+                .eq('invoice_id', invoice.id)
+                .order('created_at', { ascending: false });
+              if (payRows) retryPayRows = payRows;
+            } catch (err: any) {
+              console.warn('Payment retry succeeded, but reloading payment history encountered an error:', err?.message);
+            }
+            return mapInvoiceRowToInvoice(currentInv, retryPayRows, cases);
+          }
+        } else {
+          throw new Error('Idempotency key collision with conflicting payment details');
+        }
+      }
+    }
     throw new Error(error?.message || 'Failed to record payment in PostgreSQL');
   }
 
-  const { data: payRows } = await client
-    .from('payments')
-    .select('*')
-    .eq('workspace_id', workspaceId)
-    .eq('invoice_id', invoice.id);
+  // Surface payment-history reload errors without implying the payment itself failed
+  let payRows: any[] = [];
+  try {
+    const { data: historyData, error: payError } = await client
+      .from('payments')
+      .select('*')
+      .eq('workspace_id', workspaceId)
+      .eq('invoice_id', invoice.id)
+      .order('created_at', { ascending: false });
 
-  return mapInvoiceRowToInvoice(updatedInvRow, payRows || [], cases);
+    if (payError) {
+      console.warn('Payment recorded successfully, but reloading payment history encountered an error:', payError.message);
+    } else if (historyData) {
+      payRows = historyData;
+    }
+  } catch (historyErr: any) {
+    console.warn('Payment recorded successfully, but reloading payment history failed:', historyErr?.message);
+  }
+
+  return mapInvoiceRowToInvoice(updatedInvRow, payRows, cases);
 }
 
 // ============================================================================
@@ -1731,6 +1754,21 @@ export function useMatterTasks(chamberId: string, matterId?: string, isDemoMode:
   return { tasks, loading, error, toggleTask, addTask, refreshTasks: loadTasks };
 }
 
+export interface ExtractedFactRecord {
+  id: string;
+  workspaceId: string;
+  matterId: string;
+  documentId: string | null;
+  sourceVersion: number | null;
+  findingText: string;
+  editedText: string | null;
+  extractionMethod: string;
+  status: 'Proposed' | 'Accepted' | 'Rejected';
+  reviewedByUserId: string | null;
+  reviewedAt: string | null;
+  createdAt: string;
+}
+
 export async function saveExtractedFactsToMatter(
   chamberId: string,
   matterId: string,
@@ -1742,23 +1780,26 @@ export async function saveExtractedFactsToMatter(
     favourableFactors?: string[];
     evidenceGaps?: string[];
     overallAssessment?: string;
-  }
+    sourceDocumentId?: string | null;
+    sourceVersion?: number | null;
+  },
+  client: SupabaseClient = supabase
 ): Promise<void> {
   if (!chamberId || !matterId) return;
 
   try {
-    const existingData = await getMatterById(chamberId, matterId);
+    const existingData = await getMatterById(chamberId, matterId, client);
     if (!existingData) return;
 
     const existingAssessment = existingData.caseAssessment || {};
 
+    // DO NOT automatically merge proposed facts into favourableFactors! Only explicitly accepted facts enter assessment
     const updatedAssessment: CaseAssessment = {
       ...existingAssessment,
       favourableFactors: Array.from(
         new Set([
           ...(existingAssessment.favourableFactors || []),
           ...(data.favourableFactors || []),
-          ...(data.facts || []),
         ])
       ),
       riskFactors: Array.from(
@@ -1791,29 +1832,197 @@ export async function saveExtractedFactsToMatter(
     }
 
     if (data.facts && data.facts.length > 0) {
+      const isUuid = (val?: string | null) =>
+        !!val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val);
+
       const findingRows = data.facts.map((factText) => ({
         workspace_id: chamberId,
         matter_id: matterId,
+        document_id: isUuid(data.sourceDocumentId) ? data.sourceDocumentId : null,
+        source_version: data.sourceVersion ? Number(data.sourceVersion) : null,
         finding_text: factText,
         extraction_method: 'AI_EXTRACTED',
-        status: 'Proposed',
+        status: 'Proposed', // Saved strictly as Proposed (Req 14)
       }));
-      const { error: fndError } = await supabase.from('findings').insert(findingRows);
+      const { error: fndError } = await client.from('findings').insert(findingRows);
       if (fndError) {
         throw new Error(`Failed to save extracted findings: ${fndError.message}`);
       }
     }
 
-    await updateMatterInDb(chamberId, matterId, updatePayload);
+    await updateMatterInDb(chamberId, matterId, updatePayload, client);
     logAuditEvent(
       'CASE_UPDATE',
-      'Updated matter assessment and extracted facts via Document Analyzer',
+      'Updated matter assessment and extracted facts as Proposed via Document Analyzer',
       { chamberId, caseId: matterId }
     );
   } catch (err) {
     console.error('Error saving extracted facts to matter:', err);
     throw err;
   }
+}
+
+export async function listExtractedFactsForMatter(
+  workspaceId: string,
+  matterId: string,
+  client: SupabaseClient = supabase
+): Promise<ExtractedFactRecord[]> {
+  if (!workspaceId || !matterId) return [];
+  const { data, error } = await client
+    .from('findings')
+    .select('*')
+    .eq('workspace_id', workspaceId)
+    .eq('matter_id', matterId)
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    throw new Error(`Failed to load extracted facts: ${error.message}`);
+  }
+
+  return (data || []).map((row: any) => ({
+    id: row.id,
+    workspaceId: row.workspace_id,
+    matterId: row.matter_id,
+    documentId: row.document_id || null,
+    sourceVersion: row.source_version ? Number(row.source_version) : null,
+    findingText: row.finding_text,
+    editedText: row.edited_text || null,
+    extractionMethod: row.extraction_method || 'AI_EXTRACTED',
+    status: (row.status as ExtractedFactRecord['status']) || 'Proposed',
+    reviewedByUserId: row.reviewed_by_user_id || null,
+    reviewedAt: row.reviewed_at || null,
+    createdAt: row.created_at,
+  }));
+}
+
+export async function reviewExtractedFactInDb(
+  workspaceId: string,
+  findingId: string,
+  action: 'Accept' | 'Reject' | 'Edit',
+  editedText?: string,
+  client: SupabaseClient = supabase
+): Promise<ExtractedFactRecord> {
+  if (!workspaceId || !findingId) {
+    throw new Error('workspaceId and findingId are required for review action');
+  }
+
+  const { data, error } = await client.rpc('review_extracted_fact_atomic', {
+    p_workspace_id: workspaceId,
+    p_finding_id: findingId,
+    p_action: action,
+    p_edited_text: editedText || null,
+  });
+
+  if (error || !data) {
+    throw new Error(error?.message || 'Failed to review extracted fact in PostgreSQL');
+  }
+
+  return {
+    id: data.id,
+    workspaceId: data.workspace_id,
+    matterId: data.matter_id,
+    documentId: data.document_id || null,
+    sourceVersion: data.source_version ? Number(data.source_version) : null,
+    findingText: data.finding_text,
+    editedText: data.edited_text || null,
+    extractionMethod: data.extraction_method || 'AI_EXTRACTED',
+    status: (data.status as ExtractedFactRecord['status']) || 'Proposed',
+    reviewedByUserId: data.reviewed_by_user_id || null,
+    reviewedAt: data.reviewed_at || null,
+    createdAt: data.created_at,
+  };
+}
+
+export async function getAcceptedFactsForMatterInDb(
+  workspaceId: string,
+  matterId: string,
+  client: SupabaseClient = supabase
+): Promise<ExtractedFactRecord[]> {
+  if (!workspaceId || !matterId) return [];
+  const allFacts = await listExtractedFactsForMatter(workspaceId, matterId, client);
+  return allFacts.filter((f) => f.status === 'Accepted');
+}
+
+export interface DraftRecord {
+  id: string;
+  workspaceId: string;
+  matterId: string;
+  title: string;
+  type: string;
+  contentMarkdown: string;
+  currentVersion: number;
+  approvedVersion: number | null;
+  approvedByUserId: string | null;
+  approvedAt: string | null;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function saveDraftRevisionInDb(
+  workspaceId: string,
+  matterId: string,
+  draft: {
+    id?: string;
+    title: string;
+    type?: string;
+    contentMarkdown: string;
+    expectedVersion?: number;
+    changeNotes?: string;
+    operationId?: string;
+  },
+  client: SupabaseClient = supabase
+): Promise<DraftRecord> {
+  if (!workspaceId || !matterId) {
+    throw new Error('workspaceId and matterId are required to save draft');
+  }
+  if (!draft.title || !draft.title.trim()) {
+    throw new Error('Draft title is required');
+  }
+
+  const isUuid = (val?: string | null) =>
+    !!val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val);
+
+  const { data, error } = await client.rpc('save_draft_revision_atomic', {
+    p_workspace_id: workspaceId,
+    p_matter_id: matterId,
+    p_draft_id: isUuid(draft.id) ? draft.id : null,
+    p_title: draft.title.trim(),
+    p_doc_type: draft.type || 'Pleading',
+    p_content: draft.contentMarkdown || '',
+    p_expected_version:
+      draft.expectedVersion !== undefined && draft.expectedVersion !== null
+        ? Number(draft.expectedVersion)
+        : null,
+    p_change_notes: draft.changeNotes || null,
+    p_operation_id: draft.operationId || null,
+  });
+
+  if (error || !data) {
+    throw new Error(error?.message || 'Failed to save draft revision in PostgreSQL');
+  }
+
+  logAuditEvent(
+    'DOCUMENT_UPLOAD',
+    `Saved revision v${data.current_version} of draft "${data.title}" to Matter Document Vault`,
+    { chamberId: workspaceId, caseId: matterId, docId: data.id }
+  );
+
+  return {
+    id: data.id,
+    workspaceId: data.workspace_id,
+    matterId: data.matter_id,
+    title: data.title,
+    type: data.doc_type || 'Pleading',
+    contentMarkdown: data.content || '',
+    currentVersion: Number(data.current_version || 1),
+    approvedVersion: data.approved_version ? Number(data.approved_version) : null,
+    approvedByUserId: data.approved_by_user_id || null,
+    approvedAt: data.approved_at || null,
+    status: data.status || 'Draft',
+    createdAt: data.created_at,
+    updatedAt: data.updated_at,
+  };
 }
 
 export async function saveDraftToMatterVault(
@@ -1824,55 +2033,281 @@ export async function saveDraftToMatterVault(
     title: string;
     type: string;
     contentMarkdown: string;
+    expectedVersion?: number;
+    operationId?: string;
+  },
+  client: SupabaseClient = supabase
+): Promise<DraftRecord> {
+  return saveDraftRevisionInDb(chamberId, matterId, draft, client);
+}
+
+export async function getLatestDraftForMatterInDb(
+  workspaceId: string,
+  matterId: string,
+  client: SupabaseClient = supabase
+): Promise<DraftRecord | null> {
+  if (!workspaceId || !matterId) return null;
+  const { data, error } = await client
+    .from('drafts')
+    .select('*')
+    .eq('workspace_id', workspaceId)
+    .eq('matter_id', matterId)
+    .order('updated_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error || !data) return null;
+  return {
+    id: data.id,
+    workspaceId: data.workspace_id,
+    matterId: data.matter_id,
+    title: data.title,
+    type: data.doc_type || 'Pleading',
+    contentMarkdown: data.content || '',
+    currentVersion: Number(data.current_version || 1),
+    approvedVersion: data.approved_version ? Number(data.approved_version) : null,
+    approvedByUserId: data.approved_by_user_id || null,
+    approvedAt: data.approved_at || null,
+    status: data.status || 'Draft',
+    createdAt: data.created_at,
+    updatedAt: data.updated_at,
+  };
+}
+
+export async function listDraftsForMatterInDb(
+  workspaceId: string,
+  matterId: string,
+  client: SupabaseClient = supabase
+): Promise<DraftRecord[]> {
+  if (!workspaceId || !matterId) return [];
+  const { data, error } = await client
+    .from('drafts')
+    .select('*')
+    .eq('workspace_id', workspaceId)
+    .eq('matter_id', matterId)
+    .order('updated_at', { ascending: false });
+
+  if (error) {
+    throw new Error(`Failed to load drafts: ${error.message}`);
   }
+
+  return (data || []).map((row: any) => ({
+    id: row.id,
+    workspaceId: row.workspace_id,
+    matterId: row.matter_id,
+    title: row.title,
+    type: row.doc_type || 'Pleading',
+    contentMarkdown: row.content || '',
+    currentVersion: Number(row.current_version || 1),
+    approvedVersion: row.approved_version ? Number(row.approved_version) : null,
+    approvedByUserId: row.approved_by_user_id || null,
+    approvedAt: row.approved_at || null,
+    status: row.status || 'Draft',
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
+}
+
+export async function getDraftByIdInDb(
+  workspaceId: string,
+  draftId: string,
+  client: SupabaseClient = supabase
+): Promise<DraftRecord | null> {
+  if (!workspaceId || !draftId) return null;
+  const { data, error } = await client
+    .from('drafts')
+    .select('*')
+    .eq('workspace_id', workspaceId)
+    .eq('id', draftId)
+    .maybeSingle();
+
+  if (error || !data) return null;
+  return {
+    id: data.id,
+    workspaceId: data.workspace_id,
+    matterId: data.matter_id,
+    title: data.title,
+    type: data.doc_type || 'Pleading',
+    contentMarkdown: data.content || '',
+    currentVersion: Number(data.current_version || 1),
+    approvedVersion: data.approved_version ? Number(data.approved_version) : null,
+    approvedByUserId: data.approved_by_user_id || null,
+    approvedAt: data.approved_at || null,
+    status: data.status || 'Draft',
+    createdAt: data.created_at,
+    updatedAt: data.updated_at,
+  };
+}
+
+export async function getDraftVersionsInDb(
+  workspaceId: string,
+  draftId: string,
+  client: SupabaseClient = supabase
+): Promise<
+  Array<{
+    id: string;
+    version: number;
+    content: string;
+    changeNotes?: string;
+    createdAt: string;
+  }>
+> {
+  if (!workspaceId || !draftId) return [];
+  const { data, error } = await client
+    .from('draft_versions')
+    .select('*')
+    .eq('workspace_id', workspaceId)
+    .eq('draft_id', draftId)
+    .order('version', { ascending: true });
+
+  if (error) {
+    throw new Error(`Failed to load draft versions: ${error.message}`);
+  }
+  return (data || []).map((row: any) => ({
+    id: row.id,
+    version: Number(row.version),
+    content: row.content || '',
+    changeNotes: row.change_notes || undefined,
+    createdAt: row.created_at,
+  }));
+}
+
+export async function approveDraftInDb(
+  workspaceId: string,
+  draftId: string,
+  version: number,
+  userId?: string,
+  client: SupabaseClient = supabase
+): Promise<DraftRecord> {
+  if (!workspaceId || !draftId) {
+    throw new Error('workspaceId and draftId are required to approve draft');
+  }
+
+  const { data, error } = await client.rpc('approve_draft_atomic', {
+    p_workspace_id: workspaceId,
+    p_draft_id: draftId,
+    p_expected_version: version,
+  });
+
+  if (error || !data) {
+    throw new Error(error?.message || 'Failed to approve draft in PostgreSQL');
+  }
+
+  return {
+    id: data.id,
+    workspaceId: data.workspace_id,
+    matterId: data.matter_id,
+    title: data.title,
+    type: data.doc_type || 'Pleading',
+    contentMarkdown: data.content || '',
+    currentVersion: Number(data.current_version || 1),
+    approvedVersion: data.approved_version ? Number(data.approved_version) : null,
+    approvedByUserId: data.approved_by_user_id || null,
+    approvedAt: data.approved_at || null,
+    status: data.status || 'Draft',
+    createdAt: data.created_at,
+    updatedAt: data.updated_at,
+  };
+}
+
+export async function updateDraftInDb(
+  workspaceId: string,
+  draftId: string,
+  updates: { content?: string; title?: string; docType?: string },
+  client: SupabaseClient = supabase
 ): Promise<void> {
-  if (!chamberId || !matterId) return;
-
-  try {
-    const { data: insertedDraft, error } = await supabase
-      .from('drafts')
-      .insert({
-        workspace_id: chamberId,
-        matter_id: matterId,
-        title: draft.title,
-        doc_type: draft.type,
-        content: draft.contentMarkdown,
-        current_version: 1,
-        status: 'Draft',
-      })
-      .select('id')
-      .single();
-
-    if (error || !insertedDraft?.id) {
-      throw new Error(error?.message || 'Failed to save draft');
-    }
-
-    const { error: versionError } = await supabase.from('draft_versions').insert({
-      draft_id: insertedDraft.id,
-      workspace_id: chamberId,
-      version: 1,
-      content: draft.contentMarkdown,
-      change_notes: 'Initial AI generated draft',
-    });
-
-    if (versionError) {
-      await supabase
-        .from('drafts')
-        .delete()
-        .eq('id', insertedDraft.id)
-        .eq('workspace_id', chamberId);
-      throw new Error(`Failed to save draft version: ${versionError.message}`);
-    }
-
-    logAuditEvent(
-      'DOCUMENT_UPLOAD',
-      `Saved generated draft "${draft.title}" to Matter Document Vault`,
-      { chamberId, caseId: matterId, docId: insertedDraft.id }
-    );
-  } catch (err) {
-    console.error('Error saving draft to matter vault:', err);
-    throw err;
+  if (!workspaceId || !draftId) {
+    throw new Error('workspaceId and draftId are required to update draft');
   }
+
+  const payload: Record<string, any> = {
+    updated_at: new Date().toISOString(),
+  };
+  if (updates.content !== undefined) payload.content = updates.content;
+  if (updates.title !== undefined) payload.title = updates.title;
+  if (updates.docType !== undefined) payload.doc_type = updates.docType;
+
+  const { error } = await client
+    .from('drafts')
+    .update(payload)
+    .eq('workspace_id', workspaceId)
+    .eq('id', draftId);
+
+  if (error) {
+    throw new Error(`Failed to update draft in PostgreSQL: ${error.message}`);
+  }
+}
+
+// Durable Background AI Jobs
+export async function createAiJobInDb(
+  workspaceId: string,
+  matterId: string | null,
+  operation: string,
+  inputData: any = {},
+  client: SupabaseClient = supabase
+): Promise<string> {
+  const { data, error } = await client
+    .from('ai_jobs')
+    .insert({
+      workspace_id: workspaceId,
+      matter_id: matterId,
+      operation,
+      input_data: inputData,
+      status: 'Queued',
+    })
+    .select('id')
+    .single();
+
+  if (error || !data) {
+    throw new Error(error?.message || 'Failed to persist AI job');
+  }
+  return data.id;
+}
+
+export async function updateAiJobStatusInDb(
+  workspaceId: string,
+  jobId: string,
+  status: 'Queued' | 'Running' | 'Completed' | 'Failed',
+  errorMessage?: string,
+  client: SupabaseClient = supabase
+): Promise<void> {
+  const { error } = await client
+    .from('ai_jobs')
+    .update({
+      status,
+      error_message: errorMessage || null,
+      completed_at: status === 'Completed' || status === 'Failed' ? new Date().toISOString() : null,
+    })
+    .eq('workspace_id', workspaceId)
+    .eq('id', jobId);
+
+  if (error) {
+    throw new Error(`Failed to update AI job status: ${error.message}`);
+  }
+}
+
+export async function saveAiResultInDb(
+  workspaceId: string,
+  jobId: string,
+  resultType: string,
+  resultData: any,
+  client: SupabaseClient = supabase
+): Promise<string> {
+  const { data, error } = await client
+    .from('ai_results')
+    .insert({
+      workspace_id: workspaceId,
+      job_id: jobId,
+      result_type: resultType,
+      result_data: resultData,
+    })
+    .select('id')
+    .single();
+
+  if (error || !data) {
+    throw new Error(error?.message || 'Failed to persist AI result');
+  }
+  return data.id;
 }
 
 export async function assignQuickNoteToMatter(
@@ -2100,3 +2535,473 @@ export function useChamberClients(chamberId: string, isDemoMode: boolean = false
 
   return { clients, loading };
 }
+
+// ============================================================================
+// CLIENT PORTAL INVITATIONS & RESTRICTED ACCESS GRANTS
+// ============================================================================
+
+export interface ClientInvitationScopes {
+  viewHearings: boolean;
+  viewFilings: boolean;
+  viewBilling: boolean;
+  uploadDocs: boolean;
+  chatAi: boolean;
+}
+
+export interface PersistedClientInvitation {
+  id: string;
+  workspaceId: string;
+  matterId: string;
+  matterTitle?: string;
+  clientEmail: string;
+  clientName: string;
+  clientPhone?: string | null;
+  scopes: ClientInvitationScopes;
+  expiresAt: string;
+  createdByUserId?: string | null;
+  redeemedByUserId?: string | null;
+  redeemedAt?: string | null;
+  revokedByUserId?: string | null;
+  revokedAt?: string | null;
+  status: 'Active' | 'Redeemed' | 'Expired' | 'Revoked';
+  deliveryStatus: 'email_not_sent' | 'email_sent';
+  createdAt: string;
+  /**
+   * Transiently populated ONLY in memory at the moment of invitation creation
+   * so staff can copy the link when email is not configured. Never stored in DB or logged.
+   */
+  transientInviteUrl?: string;
+}
+
+export interface RedeemedClientAccessGrant {
+  grantId: string;
+  invitationId?: string | null;
+  workspaceId: string;
+  workspaceName: string;
+  matterId: string;
+  matterTitle: string;
+  clientUserId: string;
+  clientEmail: string;
+  clientName: string;
+  scopes: ClientInvitationScopes;
+  expiresAt?: string | null;
+  status: 'Redeemed';
+  replayed: boolean;
+}
+
+export interface RestrictedClientPortalMatterView {
+  grant: {
+    id: string;
+    workspace_id: string;
+    workspace_name: string;
+    matter_id: string;
+    client_email: string;
+    client_name: string;
+    scopes: ClientInvitationScopes;
+    granted_at: string;
+    expires_at?: string | null;
+  };
+  matter: {
+    id: string;
+    workspace_id: string;
+    title: string;
+    case_number?: string | null;
+    court_name?: string | null;
+    judge_name?: string | null;
+    stage?: string | null;
+    status?: string | null;
+    case_type?: string | null;
+    client_name?: string | null;
+    next_hearing_date?: string | null;
+    updated_at?: string | null;
+  };
+  hearings: Array<{
+    id: string;
+    hearing_date: string;
+    purpose?: string | null;
+    court_room?: string | null;
+    outcome_notes?: string | null;
+    next_date?: string | null;
+  }>;
+  timeline: Array<{
+    id: string;
+    event_date: string;
+    title: string;
+    description?: string | null;
+    event_type?: string | null;
+  }>;
+  documents: Array<{
+    id: string;
+    name: string;
+    doc_type?: string | null;
+    file_size?: number | null;
+    mime_type?: string | null;
+    current_version?: number | null;
+    created_at?: string | null;
+  }>;
+  invoices: Array<{
+    id: string;
+    invoice_number: string;
+    issue_date: string;
+    due_date?: string | null;
+    subtotal?: number | null;
+    tax_amount?: number | null;
+    total_amount: number;
+    paid_amount: number;
+    balance_amount?: number | null;
+    status: string;
+  }>;
+}
+
+/**
+ * Generates a 256-bit (64 hex chars) cryptographically secure invitation token using Web Crypto API.
+ * Never uses Math.random().
+ */
+export function generateSecureClientInviteToken(): string {
+  const bytes = new Uint8Array(32);
+  if (typeof globalThis !== 'undefined' && globalThis.crypto && globalThis.crypto.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    throw new Error('Cryptographically secure random generator is unavailable in this environment.');
+  }
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+/**
+ * Computes the SHA-256 hex digest (64 lowercase hex characters) of a raw invitation token.
+ * Raw tokens are never stored or logged.
+ */
+export async function hashClientInviteTokenSha256(rawToken: string): Promise<string> {
+  const clean = (rawToken || '').trim();
+  if (!clean) {
+    throw new Error('Cannot hash an empty invitation token.');
+  }
+  const encoded = new TextEncoder().encode(clean);
+  const digestBuffer = await globalThis.crypto.subtle.digest('SHA-256', encoded);
+  return Array.from(new Uint8Array(digestBuffer))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+/**
+ * Resolves the configured application origin for building invitation links.
+ * Never uses hardcoded fake domains.
+ */
+export function getConfiguredApplicationOrigin(customOrigin?: string): string {
+  if (customOrigin && customOrigin.trim().startsWith('http')) {
+    return customOrigin.trim().replace(/\/+$/, '');
+  }
+  const envOrigin =
+    (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_APP_ORIGIN) ||
+    (typeof process !== 'undefined' && (process.env?.APP_ORIGIN || process.env?.VITE_APP_ORIGIN));
+  if (envOrigin && typeof envOrigin === 'string' && envOrigin.trim().startsWith('http')) {
+    return envOrigin.trim().replace(/\/+$/, '');
+  }
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    return window.location.origin.replace(/\/+$/, '');
+  }
+  return 'http://localhost:3000';
+}
+
+/**
+ * Builds the client portal redemption link using the configured application origin.
+ */
+export function buildClientInvitationUrl(rawToken: string, customOrigin?: string): string {
+  const origin = getConfiguredApplicationOrigin(customOrigin);
+  return `${origin}/portal/redeem?token=${encodeURIComponent(rawToken.trim())}`;
+}
+
+export function mapClientInvitationRow(
+  row: any,
+  cases: CaseFile[] = []
+): PersistedClientInvitation {
+  const matchedCase = cases.find((c) => c.id === row.matter_id);
+  const expiresAtIso = row.expires_at || new Date(Date.now() + 7 * 86400000).toISOString();
+  const isPastExpiry = new Date(expiresAtIso).getTime() <= Date.now();
+  let computedStatus: PersistedClientInvitation['status'] = row.status || 'Active';
+  if (row.revoked_at || computedStatus === 'Revoked') {
+    computedStatus = 'Revoked';
+  } else if (row.redeemed_at || computedStatus === 'Redeemed') {
+    computedStatus = 'Redeemed';
+  } else if (isPastExpiry || computedStatus === 'Expired') {
+    computedStatus = 'Expired';
+  }
+
+  const rawScopes = row.scopes && typeof row.scopes === 'object' ? row.scopes : {};
+
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    matterId: row.matter_id,
+    matterTitle: row.matter_title || matchedCase?.title || 'Matter',
+    clientEmail: String(row.client_email || '').toLowerCase(),
+    clientName: row.client_name || matchedCase?.clientName || 'Client',
+    clientPhone: row.client_phone || null,
+    scopes: {
+      viewHearings: Boolean(rawScopes.viewHearings ?? true),
+      viewFilings: Boolean(rawScopes.viewFilings ?? true),
+      viewBilling: Boolean(rawScopes.viewBilling ?? true),
+      uploadDocs: Boolean(rawScopes.uploadDocs ?? false),
+      chatAi: Boolean(rawScopes.chatAi ?? false),
+    },
+    expiresAt: expiresAtIso,
+    createdByUserId: row.created_by_user_id || null,
+    redeemedByUserId: row.redeemed_by_user_id || null,
+    redeemedAt: row.redeemed_at || null,
+    revokedByUserId: row.revoked_by_user_id || null,
+    revokedAt: row.revoked_at || null,
+    status: computedStatus,
+    deliveryStatus: row.delivery_status === 'email_sent' ? 'email_sent' : 'email_not_sent',
+    createdAt: row.created_at || new Date().toISOString(),
+  };
+}
+
+/**
+ * Creates a persisted client invitation via the atomic RPC `create_client_invitation_atomic`,
+ * storing ONLY the SHA-256 token hash in PostgreSQL and never logging raw tokens.
+ */
+export async function createClientInvitationInDb(
+  input: {
+    workspaceId: string;
+    matterId: string;
+    clientEmail: string;
+    clientName: string;
+    clientPhone?: string | null;
+    scopes: ClientInvitationScopes;
+    expiresInDays?: number;
+    expiresAt?: string;
+    origin?: string;
+  },
+  cases: CaseFile[] = [],
+  client: SupabaseClient = supabase
+): Promise<{
+  invitation: PersistedClientInvitation;
+  inviteUrl: string;
+  emailSent: boolean;
+  deliveryStatus: 'email_not_sent' | 'email_sent';
+  deliveryMessage: string;
+}> {
+  if (!input.workspaceId || !input.matterId) {
+    throw new Error('Both workspaceId and matterId are required to create a client invitation.');
+  }
+  const normalizedEmail = (input.clientEmail || '').trim().toLowerCase();
+  if (!normalizedEmail || !normalizedEmail.includes('@')) {
+    throw new Error('A valid intended recipient email is required.');
+  }
+
+  const rawToken = generateSecureClientInviteToken();
+  const tokenHash = await hashClientInviteTokenSha256(rawToken);
+
+  const expiresInDays = Number(input.expiresInDays ?? 7);
+  const expiresAtIso = input.expiresAt
+    ? new Date(input.expiresAt).toISOString()
+    : new Date(Date.now() + Math.max(1, expiresInDays) * 86400000).toISOString();
+
+  const { data, error } = await client.rpc('create_client_invitation_atomic', {
+    p_workspace_id: input.workspaceId,
+    p_matter_id: input.matterId,
+    p_client_email: normalizedEmail,
+    p_client_name: (input.clientName || 'Client').trim(),
+    p_client_phone: input.clientPhone?.trim() || null,
+    p_token_hash: tokenHash,
+    p_scopes: input.scopes,
+    p_expires_at: expiresAtIso,
+    p_delivery_status: 'email_not_sent',
+  });
+
+  if (error || !data) {
+    throw new Error(error?.message || 'Failed to create client invitation.');
+  }
+
+  const inviteUrl = buildClientInvitationUrl(rawToken, input.origin);
+  const invitation = mapClientInvitationRow(data, cases);
+  invitation.transientInviteUrl = inviteUrl;
+
+  return {
+    invitation,
+    inviteUrl,
+    emailSent: false,
+    deliveryStatus: 'email_not_sent',
+    deliveryMessage: 'Email not sent',
+  };
+}
+
+/**
+ * Lists persisted client invitations for a workspace (excludes token_hash).
+ */
+export async function listClientInvitationsForWorkspace(
+  workspaceId: string,
+  cases: CaseFile[] = [],
+  client: SupabaseClient = supabase
+): Promise<PersistedClientInvitation[]> {
+  if (!workspaceId) return [];
+
+  const { data, error } = await client
+    .from('client_invitations')
+    .select(
+      'id,workspace_id,matter_id,client_email,client_name,client_phone,scopes,expires_at,created_by_user_id,redeemed_by_user_id,redeemed_at,revoked_by_user_id,revoked_at,status,delivery_status,created_at,updated_at'
+    )
+    .eq('workspace_id', workspaceId)
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    throw new Error(`Failed to load client invitations: ${error.message}`);
+  }
+
+  return (data || []).map((row) => mapClientInvitationRow(row, cases));
+}
+
+/**
+ * Atomically revokes a client invitation and any post-redemption client_access_grants.
+ */
+export async function revokeClientInvitationInDb(
+  workspaceId: string,
+  invitationId: string,
+  client: SupabaseClient = supabase
+): Promise<{
+  id: string;
+  status: 'Revoked';
+  revokedAt: string;
+  revokedGrantsCount: number;
+}> {
+  if (!workspaceId || !invitationId) {
+    throw new Error('workspaceId and invitationId are required to revoke access.');
+  }
+
+  const { data, error } = await client.rpc('revoke_client_invitation_atomic', {
+    p_workspace_id: workspaceId,
+    p_invitation_id: invitationId,
+  });
+
+  if (error || !data) {
+    throw new Error(error?.message || 'Failed to revoke client invitation.');
+  }
+
+  return {
+    id: data.id,
+    status: 'Revoked',
+    revokedAt: data.revoked_at,
+    revokedGrantsCount: Number(data.revoked_grants_count || 0),
+  };
+}
+
+/**
+ * Atomically redeems a raw client invitation token by hashing it with SHA-256 and calling
+ * `redeem_client_invitation_atomic`. Never logs raw tokens.
+ */
+export async function redeemClientInvitationInDb(
+  rawToken: string,
+  client: SupabaseClient = supabase
+): Promise<RedeemedClientAccessGrant> {
+  const clean = (rawToken || '').trim();
+  if (!clean || clean.length < 32) {
+    throw new Error('400 Bad Request: A valid client invitation token is required.');
+  }
+
+  const tokenHash = await hashClientInviteTokenSha256(clean);
+  const { data, error } = await client.rpc('redeem_client_invitation_atomic', {
+    p_token_hash: tokenHash,
+  });
+
+  if (error || !data) {
+    throw new Error(error?.message || 'Failed to redeem client portal invitation.');
+  }
+
+  return {
+    grantId: data.grant_id,
+    invitationId: data.invitation_id || null,
+    workspaceId: data.workspace_id,
+    workspaceName: data.workspace_name || 'Legal Chamber',
+    matterId: data.matter_id,
+    matterTitle: data.matter_title || 'Matter',
+    clientUserId: data.client_user_id,
+    clientEmail: data.client_email,
+    clientName: data.client_name || 'Client',
+    scopes: {
+      viewHearings: Boolean(data.scopes?.viewHearings ?? true),
+      viewFilings: Boolean(data.scopes?.viewFilings ?? true),
+      viewBilling: Boolean(data.scopes?.viewBilling ?? true),
+      uploadDocs: Boolean(data.scopes?.uploadDocs ?? false),
+      chatAi: Boolean(data.scopes?.chatAi ?? false),
+    },
+    expiresAt: data.expires_at || null,
+    status: 'Redeemed',
+    replayed: Boolean(data.replayed),
+  };
+}
+
+/**
+ * Fetches the strictly scoped client portal view for a granted matter.
+ * Enforces active non-revoked, non-expired grant and scope permissions.
+ */
+export async function getRestrictedClientPortalMatterInDb(
+  matterId: string,
+  client: SupabaseClient = supabase
+): Promise<RestrictedClientPortalMatterView> {
+  if (!matterId || !matterId.trim()) {
+    throw new Error('matterId is required.');
+  }
+
+  const { data, error } = await client.rpc('get_restricted_client_portal_matter_atomic', {
+    p_matter_id: matterId,
+  });
+
+  if (error || !data) {
+    throw new Error(
+      error?.message || '403 Forbidden: Active client access grant not found or revoked for this matter.'
+    );
+  }
+
+  return data as RestrictedClientPortalMatterView;
+}
+
+/**
+ * Lists all active, non-revoked, non-expired client_access_grants for the currently authenticated user.
+ */
+export async function listActiveClientGrantsForUser(
+  client: SupabaseClient = supabase
+): Promise<
+  Array<{
+    id: string;
+    workspaceId: string;
+    matterId: string;
+    clientEmail: string;
+    clientName: string;
+    scopes: ClientInvitationScopes;
+    grantedAt: string;
+    expiresAt?: string | null;
+  }>
+> {
+  const { data, error } = await client
+    .from('client_access_grants')
+    .select('*')
+    .is('revoked_at', null)
+    .order('granted_at', { ascending: false });
+
+  if (error || !data) {
+    return [];
+  }
+
+  const now = Date.now();
+  return data
+    .filter((row: any) => !row.revoked_at && (!row.expires_at || new Date(row.expires_at).getTime() > now))
+    .map((row: any) => ({
+      id: row.id,
+      workspaceId: row.workspace_id,
+      matterId: row.matter_id,
+      clientEmail: row.client_email || '',
+      clientName: row.client_name || 'Client',
+      scopes: {
+        viewHearings: Boolean(row.scopes?.viewHearings ?? true),
+        viewFilings: Boolean(row.scopes?.viewFilings ?? true),
+        viewBilling: Boolean(row.scopes?.viewBilling ?? true),
+        uploadDocs: Boolean(row.scopes?.uploadDocs ?? false),
+        chatAi: Boolean(row.scopes?.chatAi ?? false),
+      },
+      grantedAt: row.granted_at,
+      expiresAt: row.expires_at || null,
+    }));
+}
+

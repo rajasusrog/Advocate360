@@ -103,6 +103,78 @@ export async function apiPost<T = any>(url: string, body: any): Promise<T> {
   return response.json();
 }
 
+export async function apiGet<T = any>(url: string): Promise<T> {
+  const {
+    data: { session },
+    error,
+  } = await supabase.auth.getSession();
+
+  if (error || !session || !session.access_token) {
+    throw new AuthenticationRequiredError();
+  }
+
+  let accessToken = session.access_token;
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+  } catch (netErr: any) {
+    throw new Error(`Chamber network request failed: ${netErr.message}`);
+  }
+
+  if (response.status === 401) {
+    const { data: refreshed, error: refreshErr } = await supabase.auth.refreshSession();
+    if (refreshErr || !refreshed.session?.access_token) {
+      throw new SessionExpiredError();
+    }
+    accessToken = refreshed.session.access_token;
+
+    try {
+      response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      });
+    } catch {
+      throw new SessionExpiredError();
+    }
+  }
+
+  if (response.status === 401) {
+    throw new SessionExpiredError();
+  }
+
+  if (response.status === 403) {
+    let errorDetail = 'Access denied: You do not have permissions for this chamber or case.';
+    try {
+      const errData = await response.json();
+      if (errData.error) errorDetail = errData.error;
+    } catch {}
+    throw new AuthorizationError(errorDetail);
+  }
+
+  if (!response.ok) {
+    let errorMsg = `Server returned status ${response.status}`;
+    try {
+      const errorData = await response.json();
+      if (errorData.error) {
+        errorMsg = errorData.error;
+      }
+    } catch {
+      // Ignore
+    }
+    throw new Error(errorMsg);
+  }
+
+  return response.json();
+}
+
 export async function fetchCaseQuickSummaries(
   casesInput: any[] | any,
   chamberId?: string

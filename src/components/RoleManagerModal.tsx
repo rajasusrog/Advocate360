@@ -483,7 +483,7 @@ export const RoleManagerModal: React.FC<RoleManagerModalProps> = ({
                 )}
               </div>
               <p className="text-xs text-[#555555] leading-relaxed">
-                Use this simulator to preview how different staff personas (e.g., Junior Advocates, Clerks, or Clients) experience the LegalOS interface. Selecting a role here temporarily overrides UI rendering without modifying your official Firestore security credentials.
+                Use this simulator to preview how different staff personas (e.g., Junior Advocates, Clerks, or Clients) experience the LegalOS interface. Selecting a role here temporarily overrides UI rendering without modifying your official PostgreSQL security credentials.
               </p>
             </div>
 

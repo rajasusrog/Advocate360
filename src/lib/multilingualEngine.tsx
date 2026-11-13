@@ -348,7 +348,7 @@ class EnterpriseMultilingualEngine {
   private listeners: Set<(prefs: MultilingualPreferences) => void> = new Set();
 
   constructor() {
-    const saved = localStorage.getItem('legalos_multilingual_prefs');
+    const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('legalos_multilingual_prefs') : null;
     if (saved) {
       try {
         this.prefs = { ...DEFAULT_PREFERENCES, ...JSON.parse(saved) };
@@ -370,7 +370,9 @@ class EnterpriseMultilingualEngine {
 
   public updatePreferences(newPrefs: Partial<MultilingualPreferences>) {
     this.prefs = { ...this.prefs, ...newPrefs };
-    localStorage.setItem('legalos_multilingual_prefs', JSON.stringify(this.prefs));
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('legalos_multilingual_prefs', JSON.stringify(this.prefs));
+    }
     
     // Apply document RTL direction dynamically
     if (typeof document !== 'undefined') {
@@ -387,7 +389,9 @@ class EnterpriseMultilingualEngine {
 
   public resetToDefaults() {
     this.prefs = { ...DEFAULT_PREFERENCES };
-    localStorage.removeItem('legalos_multilingual_prefs');
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem('legalos_multilingual_prefs');
+    }
     if (typeof document !== 'undefined') {
       document.dir = 'ltr';
     }

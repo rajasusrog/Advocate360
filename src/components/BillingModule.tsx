@@ -260,6 +260,17 @@ export const BillingModule: React.FC<BillingModuleProps> = ({
   // Modal active objects
   const [activeInvoiceForView, setActiveInvoiceForView] = useState<Invoice | null>(null);
   const [activeInvoiceForPayment, setActiveInvoiceForPayment] = useState<Invoice | null>(null);
+  const [paymentOperationId, setPaymentOperationId] = useState<string>('');
+  const [submittedPaymentPayload, setSubmittedPaymentPayload] = useState<{
+    invoiceId: string;
+    amount: number;
+    paymentDate: string;
+    paymentMethod: string;
+    referenceNo: string;
+    notes: string;
+    operationId: string;
+  } | null>(null);
+  const [isPaymentSubmitting, setIsPaymentSubmitting] = useState<boolean>(false);
 
   // New Log Form State
   const [newLogData, setNewLogData] = useState<{
@@ -742,10 +753,16 @@ export const BillingModule: React.FC<BillingModuleProps> = ({
     }
   };
 
-  // Open Record Payment Modal
+  // Open Record Payment Modal (Generates a cryptographically random UUID for a new payment)
   const handleOpenPaymentModal = (inv: Invoice) => {
     setBillingError(null);
     setActiveInvoiceForPayment(inv);
+    const newOpId =
+      typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : '00000000-0000-4000-8000-' + Math.random().toString(16).substring(2, 14).padEnd(12, '0');
+    setPaymentOperationId(newOpId);
+    setSubmittedPaymentPayload(null);
     setPaymentData({
       amount: inv.balanceAmount,
       paymentDate: new Date().toISOString().split('T')[0],
@@ -756,14 +773,51 @@ export const BillingModule: React.FC<BillingModuleProps> = ({
     setIsPaymentModalOpen(true);
   };
 
-  // Submit Payment
+  // Start fresh payment operation with a brand new cryptographically random UUID
+  const handleStartNewPaymentOperation = () => {
+    const freshOpId =
+      typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : '00000000-0000-4000-8000-' + Math.random().toString(16).substring(2, 14).padEnd(12, '0');
+    setPaymentOperationId(freshOpId);
+    setSubmittedPaymentPayload(null);
+    setBillingError(null);
+  };
+
+  // Restore previously submitted payment payload to safely retry earlier operation
+  const handleRestoreSubmittedPaymentPayload = () => {
+    if (!submittedPaymentPayload) return;
+    setPaymentData({
+      amount: submittedPaymentPayload.amount,
+      paymentDate: submittedPaymentPayload.paymentDate,
+      paymentMethod: submittedPaymentPayload.paymentMethod as any,
+      referenceNo: submittedPaymentPayload.referenceNo,
+      notes: submittedPaymentPayload.notes,
+    });
+    setBillingError(null);
+  };
+
+  // Detect if user modified form inputs after an earlier submission attempt
+  const hasPayloadChangedFromSubmitted = !!(
+    submittedPaymentPayload &&
+    (submittedPaymentPayload.amount !== Number(paymentData.amount) ||
+      submittedPaymentPayload.paymentDate !== paymentData.paymentDate ||
+      submittedPaymentPayload.paymentMethod !== paymentData.paymentMethod ||
+      (submittedPaymentPayload.referenceNo || '') !== (paymentData.referenceNo || '') ||
+      (submittedPaymentPayload.notes || '') !== (paymentData.notes || ''))
+  );
+
+  // Submit Payment with duplicate submission lock and conflict resolution
   const handleSubmitPayment = async () => {
     if (!activeInvoiceForPayment) return;
+    // Prevent duplicate submissions while a request is in-flight
+    if (isPaymentSubmitting || isSavingBilling) return;
+
     setBillingError(null);
     setBillingSuccess(null);
     const payAmt = Number(paymentData.amount);
-    if (payAmt <= 0) {
-      setBillingError('Please enter a valid payment amount greater than zero.');
+    if (!Number.isFinite(payAmt) || payAmt <= 0) {
+      setBillingError('Please enter a valid finite payment amount greater than zero.');
       return;
     }
     if (!chamber?.id) {
@@ -771,7 +825,38 @@ export const BillingModule: React.FC<BillingModuleProps> = ({
       return;
     }
 
+    // If the user modified a previously submitted payload, require resolving the earlier operation
+    if (hasPayloadChangedFromSubmitted) {
+      setBillingError(
+        'Payment details differ from a previously attempted operation. To prevent conflicting idempotency collisions, please either restore original details to retry or click "Start as New Payment" to generate a fresh operation key.'
+      );
+      return;
+    }
+
+    // Require an operation ID; ensure it is preserved across retries
+    const opId =
+      paymentOperationId ||
+      (typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : '00000000-0000-4000-8000-' + Math.random().toString(16).substring(2, 14).padEnd(12, '0'));
+    if (!paymentOperationId) {
+      setPaymentOperationId(opId);
+    }
+
+    // Snapshot submitted payload before dispatching
+    const payloadSnapshot = {
+      invoiceId: activeInvoiceForPayment.id,
+      amount: payAmt,
+      paymentDate: paymentData.paymentDate,
+      paymentMethod: paymentData.paymentMethod,
+      referenceNo: paymentData.referenceNo || '',
+      notes: paymentData.notes || '',
+      operationId: opId,
+    };
+    setSubmittedPaymentPayload(payloadSnapshot);
+    setIsPaymentSubmitting(true);
     setIsSavingBilling(true);
+
     try {
       const updatedInvoice = await recordPaymentInDb(
         chamber.id,
@@ -781,7 +866,8 @@ export const BillingModule: React.FC<BillingModuleProps> = ({
           paymentDate: paymentData.paymentDate,
           paymentMethod: paymentData.paymentMethod,
           referenceNo: paymentData.referenceNo,
-          notes: paymentData.notes
+          notes: paymentData.notes,
+          idempotencyKey: opId,
         },
         cases
       );
@@ -789,6 +875,8 @@ export const BillingModule: React.FC<BillingModuleProps> = ({
       setInvoices(prev => prev.map(i => i.id === updatedInvoice.id ? updatedInvoice : i));
       setIsPaymentModalOpen(false);
       setActiveInvoiceForPayment(null);
+      setPaymentOperationId(''); // Reset operation ID only on success
+      setSubmittedPaymentPayload(null);
       logAuditEvent(
         'CASE_UPDATE',
         `Recorded Payment ₹${payAmt} for Invoice ${updatedInvoice.invoiceNumber}`,
@@ -800,10 +888,12 @@ export const BillingModule: React.FC<BillingModuleProps> = ({
       setTimeout(() => setBillingSuccess(null), 4000);
     } catch (err: any) {
       console.error('Record payment error:', err);
+      // Retain paymentOperationId and submittedPaymentPayload across retries and uncertain responses
       setBillingError(
         err?.message || 'Failed to record payment in PostgreSQL. Your input has been preserved.'
       );
     } finally {
+      setIsPaymentSubmitting(false);
       setIsSavingBilling(false);
     }
   };
@@ -2158,11 +2248,25 @@ export const BillingModule: React.FC<BillingModuleProps> = ({
                 <h2 className="font-serif italic font-bold text-xl text-[#1A1A1A]">
                   Record Payment Receipt
                 </h2>
-                <p className="text-xs text-slate-600 font-mono">
-                  Invoice #{activeInvoiceForPayment.invoiceNumber}
-                </p>
+                <div className="flex items-center gap-2 mt-1">
+                  <p className="text-xs text-slate-600 font-mono">
+                    Invoice #{activeInvoiceForPayment.invoiceNumber}
+                  </p>
+                  {paymentOperationId && (
+                    <span className="text-[10px] font-mono text-slate-500 bg-slate-100 px-2 py-0.5 border border-slate-300">
+                      Op ID: <span className="font-bold text-slate-800">{paymentOperationId}</span>
+                    </span>
+                  )}
+                </div>
               </div>
-              <button onClick={() => setIsPaymentModalOpen(false)} className="text-slate-500 hover:text-black">
+              <button
+                onClick={() => {
+                  setIsPaymentModalOpen(false);
+                  setPaymentOperationId('');
+                  setSubmittedPaymentPayload(null);
+                }}
+                className="text-slate-500 hover:text-black"
+              >
                 <X className="w-5 h-5" />
               </button>
             </div>
@@ -2170,6 +2274,34 @@ export const BillingModule: React.FC<BillingModuleProps> = ({
             {billingError && (
               <div role="alert" className="p-2.5 bg-[#FFF4F2] border border-[#FF4444] text-xs font-mono font-bold text-[#FF4444]">
                 ⚠️ {billingError}
+              </div>
+            )}
+
+            {/* Invariant & Payload Modification Warning Banner */}
+            {hasPayloadChangedFromSubmitted && (
+              <div className="p-3 bg-amber-50 border border-amber-300 rounded text-xs space-y-2">
+                <div className="font-bold text-amber-900 flex items-center gap-1.5 font-mono">
+                  <span>⚠️ Previous Submission Attempt In-Flight / Modified</span>
+                </div>
+                <p className="text-amber-800 text-[11px]">
+                  Payment details were modified from an earlier submission attempt (Op ID: <span className="font-mono font-bold">{submittedPaymentPayload?.operationId.slice(0, 8)}...</span>). You must resolve the earlier operation before proceeding.
+                </p>
+                <div className="flex gap-2 pt-1 font-mono text-[11px]">
+                  <button
+                    type="button"
+                    onClick={handleRestoreSubmittedPaymentPayload}
+                    className="px-2.5 py-1 bg-white border border-amber-400 text-amber-900 font-bold hover:bg-amber-100"
+                  >
+                    Restore Attempted Details
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleStartNewPaymentOperation}
+                    className="px-2.5 py-1 bg-amber-700 text-white font-bold hover:bg-amber-800"
+                  >
+                    Start as New Payment (Fresh ID)
+                  </button>
+                </div>
               </div>
             )}
 
@@ -2249,19 +2381,37 @@ export const BillingModule: React.FC<BillingModuleProps> = ({
               </div>
             </div>
 
-            <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
+            <div className="flex items-center justify-between pt-3 border-t border-slate-200">
               <button
-                onClick={() => setIsPaymentModalOpen(false)}
-                className="px-4 py-2 border border-slate-400 font-mono text-xs font-bold uppercase hover:bg-slate-100"
+                type="button"
+                onClick={handleStartNewPaymentOperation}
+                className="text-[11px] font-mono text-slate-600 underline hover:text-black"
+                title="Generate a fresh operation ID for a separate payment"
               >
-                Cancel
+                Generate New Op ID
               </button>
-              <button
-                onClick={handleSubmitPayment}
-                className="px-5 py-2 bg-emerald-600 text-white font-mono text-xs font-bold uppercase hover:bg-emerald-500 shadow-md"
-              >
-                Confirm Payment Receipt
-              </button>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsPaymentModalOpen(false);
+                    setPaymentOperationId('');
+                    setSubmittedPaymentPayload(null);
+                  }}
+                  disabled={isPaymentSubmitting || isSavingBilling}
+                  className="px-4 py-2 border border-slate-400 font-mono text-xs font-bold uppercase hover:bg-slate-100 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSubmitPayment}
+                  disabled={isPaymentSubmitting || isSavingBilling || hasPayloadChangedFromSubmitted}
+                  className="px-5 py-2 bg-emerald-600 text-white font-mono text-xs font-bold uppercase hover:bg-emerald-500 shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isPaymentSubmitting ? 'Recording Payment...' : 'Confirm Payment Receipt'}
+                </button>
+              </div>
             </div>
 
           </div>

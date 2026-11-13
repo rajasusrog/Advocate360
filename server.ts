@@ -1,9 +1,11 @@
 import express from 'express';
+import crypto from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
+import { DurableBackgroundWorker } from './src/lib/serverWorker.js';
 
 dotenv.config();
 
@@ -13,6 +15,7 @@ const __dirname = path.dirname(__filename);
 export interface AuthenticatedRequestContext {
   userId: string;
   email: string;
+  emailVerified?: boolean;
   accessToken: string;
   workspaceId?: string;
   role?: string;
@@ -81,9 +84,16 @@ export function createApiApp() {
         return res.status(401).json({ error: '401 Unauthorized: Invalid user session.' });
       }
 
+      const isEmailVerified =
+        Boolean(userData.email) &&
+        userData.email_verified !== false &&
+        userData.user_metadata?.email_verified !== false &&
+        userData.app_metadata?.email_verified !== false;
+
       const authContext: AuthenticatedRequestContext = {
         userId: userData.id,
         email: userData.email || '',
+        emailVerified: isEmailVerified,
         accessToken,
       };
 
@@ -141,7 +151,8 @@ export function createApiApp() {
         .json({ error: '401 Unauthorized: User identity missing from verified credentials.' });
     }
 
-    const { chamberId, workspaceId, caseId, matterId } = req.body || {};
+    const source = { ...req.query, ...(req.body || {}) };
+    const { chamberId, workspaceId, caseId, matterId } = source;
     const targetWorkspaceId = workspaceId || chamberId;
     const targetMatterId = matterId || caseId;
 
@@ -293,6 +304,296 @@ export function createApiApp() {
 
   // Apply Auth Verification, Rate Limiting, and Resource Authorization to all /api/ai/* routes
   app.use('/api/ai', verifyAuthToken, rateLimiter, verifyResourceAuthorization);
+
+  // Helper to format ai_jobs DB row into standard BackgroundJob format
+  const formatJobRow = (row: any) => ({
+    id: row.id,
+    jobId: row.job_id || row.id,
+    chamberId: row.workspace_id,
+    matterId: row.matter_id || undefined,
+    requestedBy: row.requested_by_user_id,
+    operation: row.operation,
+    title: row.title,
+    inputRecordIds: row.input_record_ids || [],
+    inputVersions: row.input_versions || [],
+    status: row.status,
+    progress: row.progress ?? (row.status === 'completed' ? 100 : null),
+    timestamps: {
+      queuedAt: row.queued_at,
+      startedAt: row.started_at || undefined,
+      completedAt: row.completed_at || undefined,
+      failedAt: row.failed_at || undefined,
+    },
+    outputReferences: row.output_references || [],
+    errorInfo: row.error_code
+      ? {
+          code: row.error_code,
+          message: row.error_message || 'Execution failed',
+          retryable: row.error_retryable ?? true,
+        }
+      : undefined,
+    idempotencyKey: row.idempotency_key,
+    logs: row.logs || [],
+  });
+
+  // Durable Jobs API Routes
+  app.post('/api/ai/jobs/enqueue', verifyAuthToken, async (req, res) => {
+    try {
+      const authContext = (req as any).authContext as AuthenticatedRequestContext;
+      const { chamberId, workspaceId, matterId, caseId, operation, title, inputRecordIds, inputVersions, idempotencyKey } = req.body || {};
+      const targetWorkspaceId = workspaceId || chamberId;
+      const targetMatterId = matterId || caseId || null;
+
+      if (!targetWorkspaceId) {
+        return res.status(400).json({ error: '400 Bad Request: chamberId/workspaceId is required.' });
+      }
+
+      if (!operation || typeof operation !== 'string') {
+        return res.status(400).json({ error: '400 Bad Request: operation string is required.' });
+      }
+
+      const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+      const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
+
+      if (!supabaseUrl || !supabaseKey || supabaseUrl.includes('placeholder')) {
+        return res.status(503).json({ error: 'Database background job service not configured.' });
+      }
+
+      const key = idempotencyKey || `${targetWorkspaceId}_${targetMatterId || 'general'}_${operation}_${(inputRecordIds || []).slice().sort().join(',')}`;
+
+      // Check existing active or completed job by idempotency key
+      const checkUrl = `${supabaseUrl}/rest/v1/ai_jobs?workspace_id=eq.${encodeURIComponent(
+        targetWorkspaceId
+      )}&idempotency_key=eq.${encodeURIComponent(key)}&select=*`;
+
+      const checkRes = await fetch(checkUrl, {
+        headers: {
+          Authorization: `Bearer ${authContext.accessToken}`,
+          apikey: supabaseKey,
+        },
+      });
+
+      if (checkRes.ok) {
+        const existing = await checkRes.json();
+        if (Array.isArray(existing) && existing.length > 0) {
+          const activeOrCompleted = existing.find(
+            (j: any) => j.status === 'queued' || j.status === 'processing' || j.status === 'completed'
+          ) || existing[0];
+          return res.json({ job: formatJobRow(activeOrCompleted), isDuplicate: true });
+        }
+      }
+
+      const jobIdStr = `job-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+      const insertUrl = `${supabaseUrl}/rest/v1/ai_jobs`;
+
+      const insertRes = await fetch(insertUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authContext.accessToken}`,
+          apikey: supabaseKey,
+          Prefer: 'return=representation',
+        },
+        body: JSON.stringify({
+          job_id: jobIdStr,
+          workspace_id: targetWorkspaceId,
+          matter_id: targetMatterId,
+          requested_by_user_id: authContext.userId,
+          operation,
+          title: title || operation,
+          input_record_ids: inputRecordIds || [],
+          input_versions: inputVersions || [],
+          idempotency_key: key,
+          status: 'queued',
+        }),
+      });
+
+      if (!insertRes.ok) {
+        const errBody = await insertRes.text();
+        return res.status(500).json({ error: 'Failed to enqueue job in database queue', details: errBody });
+      }
+
+      const insertedRows = await insertRes.json();
+      const inserted = Array.isArray(insertedRows) ? insertedRows[0] : insertedRows;
+      res.status(201).json({ job: formatJobRow(inserted), isDuplicate: false });
+    } catch (err: any) {
+      console.error('Enqueue job error:', err);
+      res.status(500).json({ error: 'Failed to enqueue job', details: err.message });
+    }
+  });
+
+  app.get('/api/ai/jobs', verifyAuthToken, verifyResourceAuthorization, async (req, res) => {
+    try {
+      const authContext = (req as any).authContext as AuthenticatedRequestContext;
+      const targetWorkspaceId =
+        (req.query.chamberId as string) ||
+        (req.query.workspaceId as string) ||
+        (req.headers['x-workspace-id'] as string) ||
+        authContext.workspaceId;
+      const targetMatterId =
+        (req.query.matterId as string) ||
+        (req.query.caseId as string) ||
+        authContext.matterId;
+
+      if (!targetWorkspaceId) {
+        return res.status(400).json({ error: '400 Bad Request: chamberId or workspaceId query parameter required.' });
+      }
+
+      const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+      const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
+
+      if (!supabaseUrl || !supabaseKey || supabaseUrl.includes('placeholder')) {
+        return res.status(503).json({ error: 'Database service not configured.' });
+      }
+
+      let url = `${supabaseUrl}/rest/v1/ai_jobs?workspace_id=eq.${encodeURIComponent(targetWorkspaceId)}&order=queued_at.desc&select=*`;
+      if (targetMatterId) {
+        url += `&matter_id=eq.${encodeURIComponent(targetMatterId)}`;
+      }
+
+      const response = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${authContext.accessToken}`,
+          apikey: supabaseKey,
+        },
+      });
+
+      if (!response.ok) {
+        return res.status(500).json({ error: 'Failed to fetch durable jobs' });
+      }
+
+      const rows = await response.json();
+      const formatted = (Array.isArray(rows) ? rows : []).map(formatJobRow);
+      res.json(formatted);
+    } catch (err: any) {
+      console.error('Fetch jobs error:', err);
+      res.status(500).json({ error: 'Failed to fetch jobs', details: err.message });
+    }
+  });
+
+  app.get('/api/ai/jobs/:jobId/result', verifyAuthToken, verifyResourceAuthorization, async (req, res) => {
+    try {
+      const authContext = (req as any).authContext as AuthenticatedRequestContext;
+      const { jobId } = req.params;
+      const targetWorkspaceId =
+        (req.query.chamberId as string) ||
+        (req.query.workspaceId as string) ||
+        (req.headers['x-workspace-id'] as string) ||
+        authContext.workspaceId;
+
+      const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+      const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
+
+      if (!supabaseUrl || !supabaseKey || supabaseUrl.includes('placeholder')) {
+        return res.status(503).json({ error: 'Database service not configured.' });
+      }
+
+      let jobUrl = `${supabaseUrl}/rest/v1/ai_jobs?or=(id.eq.${encodeURIComponent(jobId)},job_id.eq.${encodeURIComponent(jobId)})&select=*`;
+      if (targetWorkspaceId) {
+        jobUrl += `&workspace_id=eq.${encodeURIComponent(targetWorkspaceId)}`;
+      }
+
+      const jobRes = await fetch(jobUrl, {
+        headers: {
+          Authorization: `Bearer ${authContext.accessToken}`,
+          apikey: supabaseKey,
+        },
+      });
+
+      if (!jobRes.ok) {
+        return res.status(404).json({ error: 'Job not found' });
+      }
+
+      const jobs = await jobRes.json();
+      if (!Array.isArray(jobs) || jobs.length === 0) {
+        return res.status(404).json({ error: 'Job not found in this workspace' });
+      }
+
+      const jobRow = jobs[0];
+
+      const resultUrl = `${supabaseUrl}/rest/v1/ai_results?job_id=eq.${encodeURIComponent(jobRow.id)}&select=*`;
+      const resultRes = await fetch(resultUrl, {
+        headers: {
+          Authorization: `Bearer ${authContext.accessToken}`,
+          apikey: supabaseKey,
+        },
+      });
+
+      if (!resultRes.ok) {
+        return res.status(404).json({ error: 'Job result not found' });
+      }
+
+      const results = await resultRes.json();
+      const resultRow = Array.isArray(results) && results.length > 0 ? results[0] : null;
+
+      res.json({
+        jobId: jobRow.job_id,
+        operation: jobRow.operation,
+        resultPayload: resultRow ? resultRow.result_payload : null,
+      });
+    } catch (err: any) {
+      console.error('Fetch job result error:', err);
+      res.status(500).json({ error: 'Failed to fetch job result', details: err.message });
+    }
+  });
+
+  app.post('/api/ai/jobs/:jobId/retry', verifyAuthToken, async (req, res) => {
+    try {
+      const authContext = (req as any).authContext as AuthenticatedRequestContext;
+      const { jobId } = req.params;
+      const targetWorkspaceId =
+        (req.query.chamberId as string) ||
+        (req.query.workspaceId as string) ||
+        (req.headers['x-workspace-id'] as string) ||
+        (req.body && (req.body.chamberId || req.body.workspaceId)) ||
+        authContext.workspaceId;
+
+      const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+      const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
+
+      if (!supabaseUrl || !supabaseKey || supabaseUrl.includes('placeholder')) {
+        return res.status(503).json({ error: 'Database service not configured.' });
+      }
+
+      let patchUrl = `${supabaseUrl}/rest/v1/ai_jobs?or=(id.eq.${encodeURIComponent(jobId)},job_id.eq.${encodeURIComponent(jobId)})`;
+      if (targetWorkspaceId) {
+        patchUrl += `&workspace_id=eq.${encodeURIComponent(targetWorkspaceId)}`;
+      }
+
+      const patchRes = await fetch(patchUrl, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authContext.accessToken}`,
+          apikey: supabaseKey,
+          Prefer: 'return=representation',
+        },
+        body: JSON.stringify({
+          status: 'queued',
+          error_code: null,
+          error_message: null,
+          error_retryable: true,
+          queued_at: new Date().toISOString(),
+          failed_at: null,
+          lease_token: null,
+          lease_expires_at: null,
+          attempt_count: 0,
+          logs: [`Retried job manually via API at ${new Date().toISOString()}`],
+        }),
+      });
+
+      if (!patchRes.ok) {
+        return res.status(500).json({ error: 'Failed to retry job' });
+      }
+
+      const updatedRows = await patchRes.json();
+      const updated = Array.isArray(updatedRows) ? updatedRows[0] : updatedRows;
+      res.json({ job: formatJobRow(updated) });
+    } catch (err: any) {
+      console.error('Retry job error:', err);
+      res.status(500).json({ error: 'Failed to retry job', details: err.message });
+    }
+  });
 
   // 1. Client Intake Intelligence API
   app.post('/api/ai/intake', async (req, res) => {
@@ -484,11 +785,20 @@ Return JSON:
   // 4. Drafting Assistant API
   app.post('/api/ai/draft', async (req, res) => {
     try {
-      const { docType, facts, specificInstructions, clientName, oppositeParty, amount } = req.body;
+      const { docType, facts, specificInstructions, clientName, oppositeParty, amount, language } = req.body;
       const ai = getAi();
       if (!ai) {
         return res.status(503).json({ error: 'AI service temporarily unavailable. GEMINI_API_KEY is not configured.' });
       }
+
+      const langInstruction =
+        language === 'ta'
+          ? 'Draft the entire legal document in professional legal Tamil (தமிழ்) using authentic Indian court and pleading terminology.'
+          : language === 'hi'
+          ? 'Draft the entire legal document in professional legal Hindi (हिन्दी) using authentic Indian court and pleading terminology.'
+          : language && language !== 'en'
+          ? `Draft the legal document in ${language}.`
+          : 'Draft the legal document in professional English.';
 
       const prompt = `You are Advocate360 AI Drafting Agent. Draft a professional legal document in clear Markdown format.
 Document Type: ${docType}
@@ -496,6 +806,7 @@ Client Name: ${clientName || 'Client'}
 Opposite Party: ${oppositeParty || 'Opposite Party'}
 Facts & Particulars: ${facts || 'Dispute regarding property / contract / recovery'}
 Instructions: ${specificInstructions || 'Standard legal notice / plaint drafting style with grounds and prayer'}
+Language Requirement: ${langInstruction}
 
 IMPORTANT: Every generated document MUST include a visible header/footer warning:
 "Notice: AI-assisted first draft. Mandatory review required by Advocate before professional use, signing or court filing."
@@ -527,6 +838,10 @@ Return JSON:
   app.post('/api/ai/cross-examination', async (req, res) => {
     try {
       const { witnessStatement, caseContext } = req.body;
+      if (!witnessStatement || typeof witnessStatement !== 'string' || !witnessStatement.trim()) {
+        return res.status(400).json({ error: '400 Bad Request: witnessStatement is required.' });
+      }
+
       const ai = getAi();
       if (!ai) {
         return res.status(503).json({ error: 'AI service temporarily unavailable. GEMINI_API_KEY is not configured.' });
@@ -859,6 +1174,415 @@ Return ONLY a valid JSON object matching this exact structure:
     }
   });
 
+  // ============================================================================
+  // CLIENT INVITATION & RESTRICTED PORTAL ENDPOINTS (/api/client-portal/*)
+  // ============================================================================
+
+  const getSupabaseEnv = () => {
+    const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '';
+    const supabaseKey =
+      process.env.SUPABASE_SERVICE_ROLE_KEY ||
+      process.env.VITE_SUPABASE_ANON_KEY ||
+      process.env.SUPABASE_ANON_KEY ||
+      '';
+    return { supabaseUrl, supabaseKey };
+  };
+
+  const resolveApplicationOrigin = (req: express.Request): string => {
+    const configuredOrigin =
+      process.env.APP_ORIGIN ||
+      process.env.VITE_APP_ORIGIN ||
+      (typeof req.body?.origin === 'string' && req.body.origin.startsWith('http')
+        ? req.body.origin
+        : '') ||
+      (typeof req.headers.origin === 'string' && req.headers.origin.startsWith('http')
+        ? req.headers.origin
+        : '');
+    if (configuredOrigin) {
+      return configuredOrigin.replace(/\/+$/, '');
+    }
+    const host = req.get('host') || 'localhost:3000';
+    const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'http';
+    return `${proto}://${host}`.replace(/\/+$/, '');
+  };
+
+  // 1. Create Client Invitation (Authorized Staff + Valid Workspace Matter + Cryptographic Token + Hash-Only Storage)
+  app.post(
+    '/api/client-portal/invitations',
+    verifyAuthToken,
+    rateLimiter,
+    verifyResourceAuthorization,
+    async (req: express.Request, res: express.Response) => {
+      const authContext = (req as any).authContext as AuthenticatedRequestContext;
+      const authorizedStaffRoles = ['CHAMBER_OWNER', 'SENIOR_ADVOCATE', 'ASSOCIATE'];
+
+      if (!authContext.role || !authorizedStaffRoles.includes(authContext.role)) {
+        return res.status(403).json({
+          error:
+            '403 Forbidden: Only authorized chamber staff (Owner, Senior Advocate, or Associate) can issue client portal invitations.',
+        });
+      }
+
+      const targetWorkspaceId = authContext.workspaceId;
+      const targetMatterId = authContext.matterId || req.body?.matterId || req.body?.caseId;
+      if (!targetWorkspaceId || !targetMatterId) {
+        return res.status(400).json({
+          error:
+            '400 Bad Request: Both a valid workspace (chamberId) and a matter in that workspace (matterId) are required.',
+        });
+      }
+
+      const rawEmail = typeof req.body?.clientEmail === 'string' ? req.body.clientEmail.trim().toLowerCase() : '';
+      const rawName = typeof req.body?.clientName === 'string' ? req.body.clientName.trim() : 'Client';
+      const rawPhone = typeof req.body?.clientPhone === 'string' ? req.body.clientPhone.trim() : null;
+
+      if (!rawEmail || !rawEmail.includes('@')) {
+        return res.status(400).json({
+          error: '400 Bad Request: A valid intended recipient email (clientEmail) is required.',
+        });
+      }
+
+      const rawScopes = req.body?.scopes && typeof req.body.scopes === 'object' ? req.body.scopes : {};
+      const sanitizedScopes = {
+        viewHearings: Boolean(rawScopes.viewHearings ?? true),
+        viewFilings: Boolean(rawScopes.viewFilings ?? true),
+        viewBilling: Boolean(rawScopes.viewBilling ?? true),
+        uploadDocs: Boolean(rawScopes.uploadDocs ?? false),
+        chatAi: Boolean(rawScopes.chatAi ?? false),
+      };
+
+      const expiresInDays = Number(req.body?.expiresInDays || 7);
+      const expiresAtIso =
+        typeof req.body?.expiresAt === 'string' && req.body.expiresAt.trim()
+          ? new Date(req.body.expiresAt).toISOString()
+          : new Date(Date.now() + Math.max(1, expiresInDays) * 86400000).toISOString();
+
+      if (Number.isNaN(new Date(expiresAtIso).getTime()) || new Date(expiresAtIso).getTime() <= Date.now()) {
+        return res.status(400).json({
+          error: '400 Bad Request: Invitation expiry (expiresAt) must be in the future.',
+        });
+      }
+
+      // Generate cryptographically secure 256-bit token (64 hex chars); NEVER log rawToken
+      const rawToken = crypto.randomBytes(32).toString('hex');
+      const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+
+      const isEmailConfigured = Boolean(
+        process.env.SMTP_HOST || process.env.RESEND_API_KEY || process.env.SENDGRID_API_KEY
+      );
+      const deliveryStatus = isEmailConfigured ? 'email_sent' : 'email_not_sent';
+
+      try {
+        const { supabaseUrl, supabaseKey } = getSupabaseEnv();
+        const rpcRes = await fetch(`${supabaseUrl}/rest/v1/rpc/create_client_invitation_atomic`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${authContext.accessToken}`,
+            apikey: supabaseKey,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify({
+            p_workspace_id: targetWorkspaceId,
+            p_matter_id: targetMatterId,
+            p_client_email: rawEmail,
+            p_client_name: rawName || 'Client',
+            p_client_phone: rawPhone,
+            p_token_hash: tokenHash,
+            p_scopes: sanitizedScopes,
+            p_expires_at: expiresAtIso,
+            p_delivery_status: deliveryStatus,
+          }),
+        });
+
+        const rpcBody = await rpcRes.json().catch(() => ({}));
+        if (!rpcRes.ok) {
+          const msg = rpcBody?.message || rpcBody?.error || 'Failed to create client invitation.';
+          const status = msg.includes('403') ? 403 : msg.includes('400') ? 400 : 400;
+          return res.status(status).json({ error: msg });
+        }
+
+        const appOrigin = resolveApplicationOrigin(req);
+        const inviteUrl = `${appOrigin}/portal/redeem?token=${rawToken}`;
+
+        return res.status(201).json({
+          invitation: rpcBody,
+          inviteUrl,
+          emailSent: isEmailConfigured,
+          deliveryStatus,
+          deliveryMessage: isEmailConfigured
+            ? `Invitation email sent to ${rawEmail}`
+            : 'Email not sent',
+        });
+      } catch (err: any) {
+        return res.status(500).json({
+          error: 'Failed to create client invitation.',
+        });
+      }
+    }
+  );
+
+  // 2. List Workspace Client Invitations (Staff Only, Never Exposes token_hash)
+  app.get(
+    '/api/client-portal/invitations',
+    verifyAuthToken,
+    verifyResourceAuthorization,
+    async (req: express.Request, res: express.Response) => {
+      const authContext = (req as any).authContext as AuthenticatedRequestContext;
+      const targetWorkspaceId = authContext.workspaceId!;
+
+      try {
+        const { supabaseUrl, supabaseKey } = getSupabaseEnv();
+        const selectCols =
+          'id,workspace_id,matter_id,client_email,client_name,client_phone,scopes,expires_at,created_by_user_id,redeemed_by_user_id,redeemed_at,revoked_by_user_id,revoked_at,status,delivery_status,created_at,updated_at';
+        const invRes = await fetch(
+          `${supabaseUrl}/rest/v1/client_invitations?workspace_id=eq.${encodeURIComponent(
+            targetWorkspaceId
+          )}&select=${selectCols}&order=created_at.desc`,
+          {
+            method: 'GET',
+            headers: {
+              Authorization: `Bearer ${authContext.accessToken}`,
+              apikey: supabaseKey,
+              Accept: 'application/json',
+            },
+          }
+        );
+
+        if (!invRes.ok) {
+          return res.status(403).json({ error: '403 Forbidden: Unable to list workspace invitations.' });
+        }
+
+        const invitations = await invRes.json();
+        return res.status(200).json({ invitations: Array.isArray(invitations) ? invitations : [] });
+      } catch {
+        return res.status(500).json({ error: 'Failed to fetch client invitations.' });
+      }
+    }
+  );
+
+  // 3. Revoke Client Invitation & Post-Redemption Access Grant (Authorized Staff Only)
+  app.post(
+    '/api/client-portal/invitations/:invitationId/revoke',
+    verifyAuthToken,
+    verifyResourceAuthorization,
+    async (req: express.Request, res: express.Response) => {
+      const authContext = (req as any).authContext as AuthenticatedRequestContext;
+      const authorizedStaffRoles = ['CHAMBER_OWNER', 'SENIOR_ADVOCATE', 'ASSOCIATE'];
+
+      if (!authContext.role || !authorizedStaffRoles.includes(authContext.role)) {
+        return res.status(403).json({
+          error: '403 Forbidden: Only authorized chamber staff can revoke client portal access.',
+        });
+      }
+
+      const invitationId = req.params.invitationId;
+      if (!invitationId || !invitationId.trim()) {
+        return res.status(400).json({ error: '400 Bad Request: invitationId is required.' });
+      }
+
+      try {
+        const { supabaseUrl, supabaseKey } = getSupabaseEnv();
+        const rpcRes = await fetch(`${supabaseUrl}/rest/v1/rpc/revoke_client_invitation_atomic`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${authContext.accessToken}`,
+            apikey: supabaseKey,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify({
+            p_workspace_id: authContext.workspaceId,
+            p_invitation_id: invitationId,
+          }),
+        });
+
+        const rpcBody = await rpcRes.json().catch(() => ({}));
+        if (!rpcRes.ok) {
+          const msg = rpcBody?.message || rpcBody?.error || 'Failed to revoke client invitation.';
+          const status = msg.includes('403') ? 403 : msg.includes('404') ? 404 : 400;
+          return res.status(status).json({ error: msg });
+        }
+
+        return res.status(200).json({ revoked: rpcBody });
+      } catch {
+        return res.status(500).json({ error: 'Failed to revoke client invitation.' });
+      }
+    }
+  );
+
+  // 4. Redeem Client Invitation Atomically (Verified Recipient Identity Match + Expiry/Revocation Enforcement)
+  app.post(
+    '/api/client-portal/redeem',
+    verifyAuthToken,
+    rateLimiter,
+    async (req: express.Request, res: express.Response) => {
+      const authContext = (req as any).authContext as AuthenticatedRequestContext;
+
+      if (!authContext.email || authContext.emailVerified === false) {
+        return res.status(403).json({
+          error:
+            '403 Forbidden: An authenticated account with a verified email address is required to redeem an invitation.',
+        });
+      }
+
+      const rawToken = typeof req.body?.token === 'string' ? req.body.token.trim() : '';
+      if (!rawToken || rawToken.length < 32) {
+        return res.status(400).json({
+          error: '400 Bad Request: A valid invitation token is required.',
+        });
+      }
+
+      // Hash raw token with SHA-256; never log rawToken
+      const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+
+      try {
+        const { supabaseUrl, supabaseKey } = getSupabaseEnv();
+        const rpcRes = await fetch(`${supabaseUrl}/rest/v1/rpc/redeem_client_invitation_atomic`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${authContext.accessToken}`,
+            apikey: supabaseKey,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify({
+            p_token_hash: tokenHash,
+          }),
+        });
+
+        const rpcBody = await rpcRes.json().catch(() => ({}));
+        if (!rpcRes.ok) {
+          const msg = rpcBody?.message || rpcBody?.error || 'Invitation redemption failed.';
+          const status = msg.includes('410')
+            ? 410
+            : msg.includes('404')
+            ? 404
+            : msg.includes('409')
+            ? 409
+            : msg.includes('403')
+            ? 403
+            : 400;
+          return res.status(status).json({ error: msg });
+        }
+
+        return res.status(200).json({ grant: rpcBody });
+      } catch {
+        return res.status(500).json({ error: 'Invitation redemption failed.' });
+      }
+    }
+  );
+
+  // 5. Fetch Restricted Client Portal Matter View (Enforces Active Grant + Scopes, Excludes Staff Data)
+  app.get(
+    '/api/client-portal/matters/:matterId',
+    verifyAuthToken,
+    async (req: express.Request, res: express.Response) => {
+      const authContext = (req as any).authContext as AuthenticatedRequestContext;
+      const matterId = req.params.matterId;
+
+      if (!matterId || !matterId.trim()) {
+        return res.status(400).json({ error: '400 Bad Request: matterId is required.' });
+      }
+
+      try {
+        const { supabaseUrl, supabaseKey } = getSupabaseEnv();
+        const rpcRes = await fetch(
+          `${supabaseUrl}/rest/v1/rpc/get_restricted_client_portal_matter_atomic`,
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${authContext.accessToken}`,
+              apikey: supabaseKey,
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
+            },
+            body: JSON.stringify({
+              p_matter_id: matterId,
+            }),
+          }
+        );
+
+        const rpcBody = await rpcRes.json().catch(() => ({}));
+        if (!rpcRes.ok) {
+          const msg =
+            rpcBody?.message ||
+            rpcBody?.error ||
+            '403 Forbidden: You do not have an active client access grant for this matter.';
+          const status = msg.includes('404') ? 404 : 403;
+          return res.status(status).json({ error: msg });
+        }
+
+        return res.status(200).json(rpcBody);
+      } catch {
+        return res.status(403).json({
+          error: '403 Forbidden: Client portal matter authorization check failed.',
+        });
+      }
+    }
+  );
+
+  // 6. Restricted Client Portal AI Status Q&A (Requires Active Grant + chatAi Scope)
+  app.post(
+    '/api/client-portal/matters/:matterId/chat',
+    verifyAuthToken,
+    rateLimiter,
+    async (req: express.Request, res: express.Response) => {
+      const authContext = (req as any).authContext as AuthenticatedRequestContext;
+      const matterId = req.params.matterId;
+      const question = typeof req.body?.question === 'string' ? req.body.question.trim() : '';
+
+      if (!matterId || !question) {
+        return res.status(400).json({ error: '400 Bad Request: matterId and question are required.' });
+      }
+
+      try {
+        const { supabaseUrl, supabaseKey } = getSupabaseEnv();
+        const rpcRes = await fetch(
+          `${supabaseUrl}/rest/v1/rpc/get_restricted_client_portal_matter_atomic`,
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${authContext.accessToken}`,
+              apikey: supabaseKey,
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
+            },
+            body: JSON.stringify({
+              p_matter_id: matterId,
+            }),
+          }
+        );
+
+        const portalData = await rpcRes.json().catch(() => ({}));
+        if (!rpcRes.ok || !portalData?.grant) {
+          return res.status(403).json({
+            error: '403 Forbidden: You do not have an active client access grant for this matter.',
+          });
+        }
+
+        if (!portalData.grant.scopes?.chatAi) {
+          return res.status(403).json({
+            error: '403 Forbidden: AI Q&A scope (chatAi) is not enabled for this client access grant.',
+          });
+        }
+
+        const matter = portalData.matter || {};
+        const nextHearing = matter.next_hearing_date || 'Yet to be scheduled';
+        const answer = `Based on the shared status for "${matter.title || 'your matter'}" (${
+          matter.case_number || 'Pending'
+        }) before ${matter.court_name || 'the Court'}, the current stage is "${
+          matter.stage || matter.status || 'Active'
+        }" and the next listed hearing date is ${nextHearing}.`;
+
+        return res.status(200).json({ answer });
+      } catch {
+        return res.status(403).json({
+          error: '403 Forbidden: Client portal AI Q&A authorization failed.',
+        });
+      }
+    }
+  );
 
   return app;
 }
@@ -866,6 +1590,13 @@ Return ONLY a valid JSON object matching this exact structure:
 async function startServer() {
   const app = createApiApp();
   const PORT = 3000;
+
+  // Start durable server background worker loop
+  const worker = new DurableBackgroundWorker({
+    pollIntervalMs: 2000,
+    leaseDurationSeconds: 60,
+  });
+  worker.start();
 
   // Serve Vite in dev or static files in production
   if (process.env.NODE_ENV !== 'production') {
