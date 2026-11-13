@@ -24,10 +24,10 @@ export function DataTable<T>({
   className = ''
 }: DataTableProps<T>) {
   return (
-    <div className={`w-full overflow-x-auto border border-slate-200 rounded-lg shadow-2xs bg-white ${className}`}>
-      <table className="w-full text-left text-xs font-sans border-collapse min-w-[600px]">
+    <div className={`w-full overflow-x-auto border border-[#E2DFD7] rounded-xl shadow-2xs bg-white ${className}`}>
+      <table className="w-full text-left text-sm font-sans border-collapse min-w-[600px] u360-table-numeric">
         <thead>
-          <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-mono font-bold uppercase tracking-wider text-slate-600">
+          <tr className="bg-[#FAF9F6] border-b border-[#E2DFD7] text-[11px] font-semibold uppercase tracking-wider text-[#4B5565]">
             {columns.map((col, idx) => (
               <th key={idx} className={`p-3.5 ${col.className || ''}`}>
                 {col.header}
@@ -35,7 +35,7 @@ export function DataTable<T>({
             ))}
           </tr>
         </thead>
-        <tbody className="divide-y divide-slate-100 text-slate-800">
+        <tbody className="divide-y divide-[#EFECE4] text-[#0B1426]">
           {data.length > 0 ? (
             data.map((row) => {
               const key = keyExtractor(row);
@@ -43,7 +43,7 @@ export function DataTable<T>({
                 <tr
                   key={key}
                   onClick={() => onRowClick && onRowClick(row)}
-                  className={`hover:bg-slate-50/80 transition-colors ${
+                  className={`hover:bg-[#FAF9F6] transition-colors ${
                     onRowClick ? 'cursor-pointer' : ''
                   }`}
                 >
@@ -59,7 +59,7 @@ export function DataTable<T>({
             })
           ) : (
             <tr>
-              <td colSpan={columns.length} className="p-8 text-center text-slate-500 font-sans italic">
+              <td colSpan={columns.length} className="p-8 text-center text-[#4B5565] font-sans">
                 {emptyMessage}
               </td>
             </tr>

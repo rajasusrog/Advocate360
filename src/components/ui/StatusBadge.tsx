@@ -2,67 +2,85 @@ import React from 'react';
 import { CheckCircle2, Clock, AlertTriangle, XCircle, Info, ShieldCheck } from 'lucide-react';
 
 export type StatusVariant = 'success' | 'warning' | 'error' | 'info' | 'neutral' | 'pending';
+export type StatusTone = 'navy' | 'gold' | 'success' | 'warning' | 'danger' | 'neutral';
 
 export interface StatusBadgeProps {
-  status: string;
+  status?: string;
+  label?: string;
   variant?: StatusVariant;
+  tone?: StatusTone;
   showIcon?: boolean;
   className?: string;
 }
 
+const TONE_TO_VARIANT: Record<StatusTone, StatusVariant> = {
+  navy: 'info',
+  gold: 'warning',
+  success: 'success',
+  warning: 'warning',
+  danger: 'error',
+  neutral: 'neutral',
+};
+
 export const StatusBadge: React.FC<StatusBadgeProps> = ({
   status,
-  variant = 'neutral',
+  label,
+  variant,
+  tone,
   showIcon = true,
-  className = ''
+  className = '',
 }) => {
+  const resolvedVariant: StatusVariant =
+    variant || (tone ? TONE_TO_VARIANT[tone] : 'neutral');
+  const resolvedText = status || label || '';
+
   const variantMap: Record<StatusVariant, { bg: string; text: string; border: string; icon: React.ReactNode }> = {
     success: {
-      bg: 'bg-emerald-50',
-      text: 'text-emerald-800',
-      border: 'border-emerald-200',
-      icon: <CheckCircle2 className="w-3 h-3 text-emerald-600 shrink-0" aria-hidden="true" />
+      bg: 'bg-[#ECFDF5]',
+      text: 'text-[#15803D]',
+      border: 'border-[#BBF7D0]',
+      icon: <CheckCircle2 className="w-3 h-3 text-[#15803D] shrink-0" aria-hidden="true" />,
     },
     warning: {
-      bg: 'bg-amber-50',
-      text: 'text-amber-800',
-      border: 'border-amber-200',
-      icon: <AlertTriangle className="w-3 h-3 text-amber-600 shrink-0" aria-hidden="true" />
+      bg: 'bg-[#FFFBEB]',
+      text: 'text-[#825F11]',
+      border: 'border-[#FDE68A]',
+      icon: <AlertTriangle className="w-3 h-3 text-[#C49A36] shrink-0" aria-hidden="true" />,
     },
     error: {
-      bg: 'bg-red-50',
-      text: 'text-red-800',
-      border: 'border-red-200',
-      icon: <XCircle className="w-3 h-3 text-red-600 shrink-0" aria-hidden="true" />
+      bg: 'bg-[#FEF2F2]',
+      text: 'text-[#B91C1C]',
+      border: 'border-[#FECACA]',
+      icon: <XCircle className="w-3 h-3 text-[#B91C1C] shrink-0" aria-hidden="true" />,
     },
     info: {
-      bg: 'bg-blue-50',
-      text: 'text-blue-800',
-      border: 'border-blue-200',
-      icon: <Info className="w-3 h-3 text-blue-600 shrink-0" aria-hidden="true" />
+      bg: 'bg-[#0B1426]/5',
+      text: 'text-[#0B1426]',
+      border: 'border-[#0B1426]/15',
+      icon: <Info className="w-3 h-3 text-[#0B1426] shrink-0" aria-hidden="true" />,
     },
     pending: {
-      bg: 'bg-slate-100',
-      text: 'text-slate-700',
-      border: 'border-slate-200',
-      icon: <Clock className="w-3 h-3 text-slate-500 shrink-0" aria-hidden="true" />
+      bg: 'bg-[#F6F5F1]',
+      text: 'text-[#475569]',
+      border: 'border-[#E2DFD7]',
+      icon: <Clock className="w-3 h-3 text-[#C49A36] shrink-0" aria-hidden="true" />,
     },
     neutral: {
-      bg: 'bg-slate-100',
-      text: 'text-slate-800',
-      border: 'border-slate-200',
-      icon: <ShieldCheck className="w-3 h-3 text-slate-500 shrink-0" aria-hidden="true" />
-    }
+      bg: 'bg-[#F6F5F1]',
+      text: 'text-[#0B1426]',
+      border: 'border-[#E2DFD7]',
+      icon: <ShieldCheck className="w-3 h-3 text-[#475569] shrink-0" aria-hidden="true" />,
+    },
   };
 
-  const current = variantMap[variant] || variantMap.neutral;
+  const current = variantMap[resolvedVariant] || variantMap.neutral;
 
   return (
     <span
-      className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-xs border text-[11px] font-medium font-mono uppercase tracking-wider ${current.bg} ${current.text} ${current.border} ${className}`}
+      className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md border text-[11px] font-semibold font-sans whitespace-nowrap ${current.bg} ${current.text} ${current.border} ${className}`}
     >
       {showIcon && current.icon}
-      <span>{status}</span>
+      <span>{resolvedText}</span>
     </span>
   );
 };

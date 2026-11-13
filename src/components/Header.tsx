@@ -1,19 +1,17 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { 
-  Scale, 
-  Search, 
-  Bell, 
-  User as UserIcon, 
-  LogOut, 
-  Briefcase, 
-  Bot, 
-  ChevronDown, 
+import {
+  Search,
+  Bell,
+  LogOut,
+  Bot,
+  ChevronDown,
   Plus,
-  ShieldAlert,
-  Folder
+  Folder,
+  Menu,
 } from 'lucide-react';
 import { CaseFile, ChamberProfile, ChamberRole } from '../types';
+import { hasPermission } from '../lib/permissions';
 
 export interface HeaderUser {
   id?: string;
@@ -45,6 +43,16 @@ interface HeaderProps {
   onToggleDemoMode?: (val: boolean) => void;
 }
 
+const ROUTE_TITLES: Record<string, string> = {
+  '/app/today': 'Today Overview',
+  '/app/matters': 'Matters',
+  '/app/clients': 'Clients',
+  '/app/work': 'Calendar & Tasks',
+  '/app/documents': 'Documents',
+  '/app/billing': 'Billing',
+  '/app/reports': 'Reports',
+};
+
 export const Header: React.FC<HeaderProps> = ({
   user,
   chamber,
@@ -59,15 +67,17 @@ export const Header: React.FC<HeaderProps> = ({
   onToggleMobileMenu,
   unreadNotificationsCount = 0,
   isDemoMode = false,
-  onToggleDemoMode
+  onToggleDemoMode,
 }) => {
   const navigate = useNavigate();
   const location = useLocation();
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
   const profileMenuRef = useRef<HTMLDivElement>(null);
 
-  const isMatterRoute = location.pathname.startsWith('/app/matters/') && location.pathname !== '/app/matters';
-  const currentMatter = cases.find(c => c.id === selectedCaseId);
+  const isMatterRoute =
+    location.pathname.startsWith('/app/matters/') && location.pathname !== '/app/matters';
+
+  const canCreateMatter = hasPermission(currentRole, 'CREATE_CASE');
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -86,49 +96,49 @@ export const Header: React.FC<HeaderProps> = ({
     navigate(`/app/matters/${matterId}/${currentSubtab}`);
   };
 
+  const pageLabel =
+    ROUTE_TITLES[location.pathname] ||
+    (isMatterRoute
+      ? 'Matter Detail'
+      : location.pathname.startsWith('/app/settings')
+        ? 'Settings'
+        : 'Workspace');
+
   return (
-    <header className="bg-slate-900 text-white border-b border-slate-800 sticky top-0 z-40 shadow-xs select-none">
+    <header className="bg-white text-[#0B1426] border-b border-[#E2DFD7] sticky top-0 z-40 select-none">
       <div className="max-w-[1700px] mx-auto px-4 sm:px-6">
         <div className="flex items-center justify-between h-14 gap-3">
-          
-          {/* Brand & Mobile Menu Button */}
-          <div className="flex items-center gap-3 shrink-0">
+          {/* Left: Mobile Drawer Button & Chamber Context */}
+          <div className="flex items-center gap-3 min-w-0">
             {onToggleMobileMenu && (
               <button
+                type="button"
                 onClick={onToggleMobileMenu}
-                className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-md md:hidden cursor-pointer"
-                title="Toggle Navigation Menu"
+                className="p-2 text-[#0B1426] hover:bg-[#F6F5F1] border border-[#E2DFD7] rounded-lg md:hidden cursor-pointer shrink-0"
+                aria-label="Open navigation menu"
+                title="Open navigation menu"
               >
-                <Folder className="w-5 h-5 text-amber-400" />
+                <Menu className="w-4 h-4" />
               </button>
             )}
 
-            <div 
-              onClick={() => navigate('/app/today')}
-              className="flex items-center gap-2 cursor-pointer hover:opacity-90 transition-opacity"
-              title="Advocate360 AI LegalOS"
-            >
-              <div className="w-7 h-7 bg-amber-400 text-black flex items-center justify-center font-serif font-bold text-base shadow-xs rounded-xs">
-                <Scale className="w-4 h-4 text-black" />
-              </div>
-              <div className="hidden sm:block">
-                <span className="font-serif italic font-extrabold text-base tracking-tight text-white block leading-none">
-                  Advocate360
-                </span>
-                <span className="text-[9px] font-mono text-slate-400 uppercase tracking-widest block">
-                  {chamber?.name || 'Legal Practice OS'}
-                </span>
-              </div>
+            <div className="min-w-0">
+              <p className="text-[11px] font-medium text-[#64748B] truncate leading-tight">
+                {chamber?.name || 'Legal Practice Workspace'}
+              </p>
+              <p className="text-sm font-semibold text-[#0B1426] truncate leading-tight">
+                {pageLabel}
+              </p>
             </div>
 
-            {/* Matter Selector Dropdown (Rendered ONLY when inside a matter route) */}
+            {/* Matter Selector Dropdown inside a matter route */}
             {isMatterRoute && cases.length > 0 && (
-              <div className="hidden md:flex items-center gap-2 border-l border-slate-700 pl-4">
-                <Folder className="w-4 h-4 text-amber-400 shrink-0" />
+              <div className="hidden lg:flex items-center gap-2 border-l border-[#E2DFD7] pl-4 ml-1 min-w-0">
+                <Folder className="w-4 h-4 text-[#C49A36] shrink-0" />
                 <select
                   value={selectedCaseId}
                   onChange={(e) => handleSelectMatter(e.target.value)}
-                  className="bg-slate-900 text-amber-300 font-serif font-bold text-xs p-1.5 border border-slate-700 focus:outline-none focus:border-amber-400 max-w-xs truncate cursor-pointer"
+                  className="bg-[#F6F5F1] text-[#0B1426] font-medium text-xs px-2.5 py-1.5 rounded-lg border border-[#E2DFD7] focus:outline-none focus:border-[#0B1426] max-w-xs truncate cursor-pointer"
                   title="Switch Active Matter Context"
                 >
                   {cases.map((c) => (
@@ -142,102 +152,106 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
 
           {/* Right Action Utilities */}
-          <div className="flex items-center gap-2 sm:gap-3">
-            
-            {/* Contextual Action Button based on route */}
-            {location.pathname === '/app/matters' && (
+          <div className="flex items-center gap-2 shrink-0">
+            {location.pathname === '/app/matters' && canCreateMatter && (
               <button
+                type="button"
                 onClick={onOpenNewCaseModal}
-                className="px-3 py-1.5 bg-amber-400 text-black hover:bg-amber-300 font-bold uppercase text-[11px] tracking-wider flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
+                className="px-3 py-1.5 bg-[#0B1426] text-white hover:bg-[#16233D] font-semibold text-xs rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer"
               >
-                <Plus className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">New Matter</span>
+                <Plus className="w-3.5 h-3.5 text-[#C49A36]" />
+                <span className="hidden sm:inline">Add matter</span>
               </button>
             )}
 
-            {/* Global Search Button */}
             <button
+              type="button"
               onClick={onOpenSearch}
-              className="p-2 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 hover:text-white transition-colors flex items-center gap-2 text-xs cursor-pointer"
-              title="Global Search (Cmd + K)"
+              className="px-2.5 py-1.5 bg-[#F6F5F1] hover:bg-[#EFECE4] border border-[#E2DFD7] text-[#0B1426] rounded-lg transition-colors flex items-center gap-2 text-xs cursor-pointer"
+              title="Search (Cmd + K)"
             >
-              <Search className="w-4 h-4 text-amber-400" />
-              <span className="hidden lg:inline text-[11px] font-mono text-slate-400">Search (Cmd+K)</span>
+              <Search className="w-3.5 h-3.5 text-[#475569]" />
+              <span className="hidden lg:inline text-xs font-medium text-[#475569]">Search</span>
             </button>
 
-            {/* Notifications Button */}
             <button
+              type="button"
               onClick={onOpenNotifications}
-              className="p-2 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 hover:text-white transition-colors relative cursor-pointer"
+              className="p-2 bg-[#F6F5F1] hover:bg-[#EFECE4] border border-[#E2DFD7] text-[#0B1426] rounded-lg transition-colors relative cursor-pointer"
               title="Notifications"
             >
-              <Bell className="w-4 h-4 text-amber-400" />
+              <Bell className="w-4 h-4 text-[#0B1426]" />
               {unreadNotificationsCount > 0 && (
-                <span className="absolute -top-1 -right-1 bg-rose-600 text-white font-mono font-bold text-[9px] w-4 h-4 rounded-full flex items-center justify-center">
+                <span className="absolute -top-1 -right-1 bg-[#B91C1C] text-white font-semibold text-[10px] w-4 h-4 rounded-full flex items-center justify-center">
                   {unreadNotificationsCount}
                 </span>
               )}
             </button>
 
-            {/* Single "Ask Advocate360" AI Assistant Entry Point */}
             <button
+              type="button"
               onClick={onToggleAskAssistant}
-              className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 border border-amber-500/60 text-amber-300 hover:text-white transition-colors text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
-              title="Ask Advocate360 AI Assistant"
+              className="px-3 py-1.5 bg-white hover:bg-[#F6F5F1] border border-[#E2DFD7] text-[#0B1426] rounded-lg transition-colors text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+              title="Ask Advocate360 Assistant"
             >
-              <Bot className="w-4 h-4 text-amber-400" />
+              <Bot className="w-4 h-4 text-[#C49A36]" />
               <span className="hidden sm:inline">Ask Advocate360</span>
             </button>
 
             {/* User Profile Menu */}
             <div className="relative" ref={profileMenuRef}>
               <button
+                type="button"
                 onClick={() => setIsProfileMenuOpen(!isProfileMenuOpen)}
-                className="flex items-center gap-2 p-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-xs text-white cursor-pointer"
+                className="flex items-center gap-1.5 p-1 pr-2 bg-[#F6F5F1] hover:bg-[#EFECE4] border border-[#E2DFD7] rounded-lg text-xs text-[#0B1426] cursor-pointer"
+                aria-expanded={isProfileMenuOpen}
+                aria-label="User profile menu"
               >
-                <div className="w-6 h-6 rounded-full bg-amber-500 text-black font-bold flex items-center justify-center text-[10px]">
+                <div className="w-7 h-7 rounded-md bg-[#0B1426] text-[#C49A36] font-bold flex items-center justify-center text-xs">
                   {user?.displayName?.[0] || user?.email?.[0]?.toUpperCase() || 'A'}
                 </div>
-                <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+                <ChevronDown className="w-3.5 h-3.5 text-[#475569]" />
               </button>
 
               {isProfileMenuOpen && (
-                <div className="absolute right-0 top-full mt-2 w-64 bg-[#1A1A1A] border-2 border-slate-700 shadow-2xl z-50 p-3 space-y-3 animate-in fade-in duration-150 text-xs">
-                  <div className="border-b border-slate-700 pb-2">
-                    <p className="font-bold text-white truncate">{user?.displayName || 'Advocate User'}</p>
-                    <p className="text-[10px] font-mono text-slate-400 truncate">{user?.email}</p>
-                    <span className="inline-block mt-1 px-1.5 py-0.5 bg-amber-500/20 text-amber-300 text-[9px] font-mono font-bold uppercase border border-amber-500/40">
-                      {currentRole}
+                <div className="absolute right-0 top-full mt-2 w-64 bg-white border border-[#E2DFD7] rounded-xl shadow-lg z-50 p-3 space-y-3 text-xs text-[#0B1426]">
+                  <div className="border-b border-[#E2DFD7] pb-2.5">
+                    <p className="font-semibold text-[#0B1426] truncate">
+                      {user?.displayName || 'Advocate User'}
+                    </p>
+                    <p className="text-[11px] text-[#64748B] truncate">{user?.email}</p>
+                    <span className="inline-block mt-1.5 px-2 py-0.5 bg-[#0B1426]/5 text-[#0B1426] border border-[#0B1426]/15 rounded text-[10px] font-semibold uppercase">
+                      {currentRole.replace(/_/g, ' ')}
                     </span>
                   </div>
 
-                  {/* Settings & Admin navigation */}
-                  <div className="space-y-1 font-bold">
+                  <div className="space-y-1 font-medium">
                     <button
+                      type="button"
                       onClick={() => {
                         navigate('/app/settings/team');
                         setIsProfileMenuOpen(false);
                       }}
-                      className="w-full text-left p-1.5 hover:bg-slate-800 text-slate-200 hover:text-white rounded-xs"
+                      className="w-full text-left px-2.5 py-1.5 hover:bg-[#F6F5F1] text-[#0B1426] rounded-md cursor-pointer"
                     >
                       Team & Permissions
                     </button>
                     <button
+                      type="button"
                       onClick={() => {
                         navigate('/app/settings/audit');
                         setIsProfileMenuOpen(false);
                       }}
-                      className="w-full text-left p-1.5 hover:bg-slate-800 text-slate-200 hover:text-white rounded-xs"
+                      className="w-full text-left px-2.5 py-1.5 hover:bg-[#F6F5F1] text-[#0B1426] rounded-md cursor-pointer"
                     >
                       Audit Administration
                     </button>
                   </div>
 
-                  {/* Isolated Demo Sandbox Toggle */}
                   {onToggleDemoMode && (
-                    <div className="p-2 bg-slate-900 border border-slate-800 space-y-1">
-                      <div className="flex items-center justify-between text-[10px]">
-                        <span className="font-bold text-slate-300">Isolated Demo Sandbox</span>
+                    <div className="p-2.5 bg-[#F6F5F1] border border-[#E2DFD7] rounded-lg space-y-1">
+                      <label className="flex items-center justify-between text-[11px] cursor-pointer">
+                        <span className="font-semibold text-[#0B1426]">Isolated Demo Sandbox</span>
                         <input
                           type="checkbox"
                           checked={isDemoMode}
@@ -245,31 +259,30 @@ export const Header: React.FC<HeaderProps> = ({
                             onToggleDemoMode(e.target.checked);
                             setIsProfileMenuOpen(false);
                           }}
-                          className="accent-amber-500 cursor-pointer"
+                          className="accent-[#0B1426] cursor-pointer"
                         />
-                      </div>
-                      <p className="text-[9px] text-slate-400 font-sans leading-tight">
-                        Preview sample case fixtures in an isolated sandbox. Live writes disabled.
+                      </label>
+                      <p className="text-[10px] text-[#64748B] leading-tight">
+                        Preview sample case fixtures safely without affecting live workspace records.
                       </p>
                     </div>
                   )}
 
                   <button
+                    type="button"
                     onClick={() => {
                       setIsProfileMenuOpen(false);
                       onLogout();
                     }}
-                    className="w-full py-2 bg-rose-950/80 hover:bg-rose-900 text-rose-200 font-bold uppercase tracking-wider text-[10px] flex items-center justify-center gap-1.5 border border-rose-800 cursor-pointer"
+                    className="w-full py-2 bg-[#FEF2F2] hover:bg-[#FEE2E2] text-[#B91C1C] font-semibold text-xs rounded-lg flex items-center justify-center gap-1.5 border border-[#FECACA] cursor-pointer"
                   >
                     <LogOut className="w-3.5 h-3.5" />
-                    <span>Sign Out</span>
+                    <span>Sign out</span>
                   </button>
                 </div>
               )}
             </div>
-
           </div>
-
         </div>
       </div>
     </header>

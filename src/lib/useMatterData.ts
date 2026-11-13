@@ -15,6 +15,7 @@ import {
   TimeLog,
   Invoice,
   InvoicePayment,
+  CalendarEvent,
 } from '../types';
 import { logAuditEvent } from './auditLogger';
 
@@ -3004,4 +3005,118 @@ export async function listActiveClientGrantsForUser(
       expiresAt: row.expires_at || null,
     }));
 }
+
+// ============================================================================
+// HEARINGS PERSISTENCE (`public.hearings`)
+// ============================================================================
+
+export function mapHearingRowToCalendarEvent(row: any, cases: CaseFile[] = []): CalendarEvent {
+  const matchedMatter = cases.find((c) => c.id === row.matter_id);
+  const rawDate = row.hearing_date ? String(row.hearing_date) : new Date().toISOString();
+  const datePart = rawDate.split('T')[0];
+
+  let timeLabel = '10:30 AM';
+  const parsed = new Date(rawDate);
+  if (!Number.isNaN(parsed.getTime()) && rawDate.includes('T')) {
+    const hrs = parsed.getHours();
+    const mins = parsed.getMinutes();
+    if (!(hrs === 0 && mins === 0)) {
+      const ampm = hrs >= 12 ? 'PM' : 'AM';
+      const hr12 = hrs % 12 || 12;
+      timeLabel = `${String(hr12).padStart(2, '0')}:${String(mins).padStart(2, '0')} ${ampm}`;
+    }
+  }
+
+  return {
+    id: row.id,
+    caseId: row.matter_id,
+    caseTitle: matchedMatter?.title || 'Legal Matter',
+    date: datePart,
+    time: timeLabel,
+    court: row.court_name || matchedMatter?.courtName || 'Court Not Specified',
+    hearingType: row.purpose || 'Hearing',
+    judge: row.outcome || undefined,
+    status: 'Scheduled',
+  };
+}
+
+export async function listHearingsForWorkspace(
+  workspaceId: string,
+  cases: CaseFile[] = [],
+  matterId?: string,
+  client: SupabaseClient = supabase
+): Promise<CalendarEvent[]> {
+  if (!workspaceId) return [];
+  let query = client.from('hearings').select('*').eq('workspace_id', workspaceId);
+  if (matterId) {
+    query = query.eq('matter_id', matterId);
+  }
+  const { data, error } = await query.order('hearing_date', { ascending: true });
+  if (error) {
+    throw new Error(`Failed to fetch hearings: ${error.message}`);
+  }
+  return (data || []).map((row: any) => mapHearingRowToCalendarEvent(row, cases));
+}
+
+export async function createHearingInDb(
+  workspaceId: string,
+  hearingInput: {
+    matterId: string;
+    date: string;
+    time?: string;
+    courtName?: string;
+    purpose: string;
+    judgeOrBench?: string;
+    notes?: string;
+  },
+  cases: CaseFile[] = [],
+  client: SupabaseClient = supabase
+): Promise<CalendarEvent> {
+  if (!workspaceId || !hearingInput.matterId) {
+    throw new Error('workspaceId and matterId are required to schedule a hearing.');
+  }
+  if (!hearingInput.date || !hearingInput.purpose?.trim()) {
+    throw new Error('Hearing date and purpose/stage are required.');
+  }
+
+  let isoTimestamp = `${hearingInput.date}T10:30:00`;
+  if (hearingInput.time && /^\d{2}:\d{2}$/.test(hearingInput.time.trim())) {
+    isoTimestamp = `${hearingInput.date}T${hearingInput.time.trim()}:00`;
+  }
+
+  const { data, error } = await client
+    .from('hearings')
+    .insert({
+      workspace_id: workspaceId,
+      matter_id: hearingInput.matterId,
+      court_name: hearingInput.courtName?.trim() || null,
+      hearing_date: new Date(isoTimestamp).toISOString(),
+      purpose: hearingInput.purpose.trim(),
+      outcome: hearingInput.judgeOrBench?.trim() || null,
+      next_steps: hearingInput.notes?.trim() || null,
+    })
+    .select('*')
+    .single();
+
+  if (error || !data) {
+    throw new Error(error?.message || 'Failed to save hearing in PostgreSQL.');
+  }
+
+  // Also sync next_hearing_date on matter record when appropriate
+  try {
+    await client
+      .from('matters')
+      .update({
+        next_hearing_date: hearingInput.date,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('workspace_id', workspaceId)
+      .eq('id', hearingInput.matterId);
+  } catch {
+    // Non-fatal if matter next_hearing_date sync fails after hearing row persisted
+  }
+
+  return mapHearingRowToCalendarEvent(data, cases);
+}
+
 

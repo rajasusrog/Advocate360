@@ -196,54 +196,53 @@ export const QuickNotesDrawer: React.FC<QuickNotesDrawerProps> = ({
   return (
     <>
       {/* Floating Action Button (FAB) */}
-      <div className="fixed bottom-6 right-6 z-40 flex items-center gap-2">
+      <div className="fixed bottom-5 right-5 z-40 flex items-center gap-2">
         <button
+          type="button"
           onClick={() => setIsOpen(!isOpen)}
-          className={`flex items-center gap-2.5 px-4 py-3 bg-[#1A1A1A] hover:bg-black text-amber-400 border-2 border-amber-500 shadow-xl transition-all duration-200 transform hover:scale-105 active:scale-95 group ${
-            isOpen ? 'ring-4 ring-amber-400/30' : ''
+          className={`flex items-center gap-2 px-3.5 py-2.5 bg-[#0B1426] hover:bg-[#16233D] text-white border border-[#C49A36]/60 rounded-xl shadow-lg transition-all duration-200 group cursor-pointer ${
+            isOpen ? 'ring-2 ring-[#C49A36]/40' : ''
           }`}
-          title="Urgent Quick Notes & Voice Dictation"
+          title="Quick Notes & Dictation"
         >
           <div className="relative">
-            <StickyNote className="w-5 h-5 text-amber-400 group-hover:rotate-12 transition-transform" />
+            <StickyNote className="w-4 h-4 text-[#C49A36]" />
             {unassignedNotes.length > 0 && (
-              <span className="absolute -top-2 -right-2 bg-amber-500 text-black font-black text-[10px] w-4 h-4 rounded-full flex items-center justify-center font-mono">
+              <span className="absolute -top-2 -right-2 bg-[#C49A36] text-[#0B1426] font-bold text-[10px] w-4 h-4 rounded-full flex items-center justify-center">
                 {unassignedNotes.length}
               </span>
             )}
           </div>
-          <span className="font-serif font-bold italic tracking-wide text-sm hidden sm:inline text-white">
+          <span className="font-semibold text-xs hidden sm:inline text-white">
             Quick Notes
-          </span>
-          <span className="text-[10px] uppercase tracking-widest font-mono text-amber-400/80 border-l border-slate-700 pl-2 hidden md:inline">
-            Voice AI
           </span>
         </button>
       </div>
 
       {/* Floating Slide-over / Modal Panel */}
       {isOpen && (
-        <div className="fixed inset-y-0 right-0 z-50 w-full max-w-md sm:max-w-lg bg-[#FDFCFB] border-l-2 border-[#1A1A1A] shadow-2xl flex flex-col font-sans text-[#1A1A1A] animate-in slide-in-from-right duration-200">
+        <div className="fixed inset-y-0 right-0 z-50 w-full max-w-md sm:max-w-lg bg-[#F6F5F1] border-l border-[#E2DFD7] shadow-2xl flex flex-col font-sans text-[#0B1426] animate-in slide-in-from-right duration-200">
           
           {/* Header */}
-          <div className="p-4 bg-[#1A1A1A] text-white border-b-2 border-[#1A1A1A] flex items-center justify-between">
+          <div className="p-4 bg-[#0B1426] text-white border-b border-white/10 flex items-center justify-between">
             <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 bg-amber-500 text-black flex items-center justify-center font-serif font-bold text-base">
+              <div className="w-8 h-8 rounded-lg bg-[#C49A36] text-[#0B1426] flex items-center justify-center">
                 <StickyNote className="w-4 h-4" />
               </div>
               <div>
-                <h3 className="font-serif italic font-bold text-base text-amber-300">
-                  Quick Notes & Urgent Memos
+                <h3 className="font-bold text-sm text-white">
+                  Quick Notes &amp; Memos
                 </h3>
-                <p className="text-[11px] text-slate-300 font-mono">
-                  {unassignedNotes.length} unassigned thoughts pending matter mapping
+                <p className="text-[11px] text-slate-300">
+                  {unassignedNotes.length} unassigned notes pending matter assignment
                 </p>
               </div>
             </div>
 
             <button
+              type="button"
               onClick={() => setIsOpen(false)}
-              className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+              className="p-1.5 text-slate-300 hover:text-white hover:bg-white/10 rounded-lg transition-colors cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>

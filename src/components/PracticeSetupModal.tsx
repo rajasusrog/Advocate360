@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
-import { Building2, Scale, User, ShieldCheck, ArrowRight, Sparkles } from 'lucide-react';
-import { ChamberProfile, UserProfile } from '../types';
+import { ShieldCheck, ArrowRight, AlertTriangle } from 'lucide-react';
 
 interface PracticeSetupModalProps {
   userEmail: string;
@@ -29,7 +28,7 @@ const STATE_BAR_COUNCILS = [
   'Bar Council of Kerala',
   'Bar Council of Rajasthan',
   'Bar Council of Telangana / AP',
-  'Other State Bar Council'
+  'Other State Bar Council',
 ];
 
 const PRACTICE_AREAS = [
@@ -40,34 +39,33 @@ const PRACTICE_AREAS = [
   'Constitutional & Writ Jurisdiction',
   'Taxation & Revenue',
   'Arbitration & ADR',
-  'Consumer & Labour Disputes'
+  'Consumer & Labour Disputes',
 ];
 
 export const PracticeSetupModal: React.FC<PracticeSetupModalProps> = ({
-  userEmail,
   userDisplayName,
   onSubmitSetup,
-  isSubmitting
+  isSubmitting,
 }) => {
   const [advocateName, setAdvocateName] = useState(userDisplayName || 'Advocate');
-  const [chamberName, setChamberName] = useState(`${userDisplayName || 'Advocate'}'s Law Chambers`);
+  const [chamberName, setChamberName] = useState(`${userDisplayName || 'Advocate'} Law Chambers`);
   const [enrollmentNo, setEnrollmentNo] = useState('');
-  const [stateBarCouncil, setStateBarCouncil] = useState('Bar Council of Delhi');
+  const [stateBarCouncil, setStateBarCouncil] = useState('Bar Council of Tamil Nadu & Puducherry');
   const [officeLocation, setOfficeLocation] = useState('High Court & City Civil Courts');
   const [phone, setPhone] = useState('');
   const [selectedAreas, setSelectedAreas] = useState<string[]>(['Civil & Property Disputes']);
   const [error, setError] = useState('');
 
   const toggleArea = (area: string) => {
-    setSelectedAreas(prev => 
-      prev.includes(area) ? prev.filter(a => a !== area) : [...prev, area]
+    setSelectedAreas((prev) =>
+      prev.includes(area) ? prev.filter((a) => a !== area) : [...prev, area]
     );
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!advocateName.trim() || !chamberName.trim()) {
-      setError('Advocate Name and Chamber Name are required.');
+      setError('Advocate name and chamber name are required.');
       return;
     }
     setError('');
@@ -79,94 +77,95 @@ export const PracticeSetupModal: React.FC<PracticeSetupModalProps> = ({
         stateBarCouncil,
         officeLocation,
         phone,
-        practiceAreas: selectedAreas
+        practiceAreas: selectedAreas,
       });
     } catch (err: any) {
-      setError(err.message || 'Failed to setup practice profile.');
+      setError(err.message || 'Failed to set up practice profile. Your input has been preserved.');
     }
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
-      <div className="bg-[#FDFCFB] border-2 border-[#1A1A1A] max-w-2xl w-full shadow-2xl p-6 sm:p-8 space-y-6 text-[#1A1A1A] my-8">
-        
+    <div className="fixed inset-0 z-50 bg-[#0B1426]/65 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+      <div className="bg-white border border-[#E2DFD7] rounded-2xl max-w-2xl w-full shadow-2xl p-6 sm:p-8 space-y-6 text-[#0B1426] my-8">
         {/* Header */}
-        <div className="bg-[#F5F2EF] border border-[#1A1A1A] p-5">
-          <div className="inline-flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.2em] bg-[#1A1A1A] text-amber-400 px-2.5 py-0.5 mb-2">
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>First Login Setup • Private Chamber Registration</span>
+        <div className="bg-[#F6F5F1] border border-[#E2DFD7] rounded-xl p-5">
+          <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider bg-[#0B1426] text-[#C49A36] px-2.5 py-0.5 rounded mb-2">
+            <span>Chamber Setup</span>
           </div>
-          <h2 className="font-serif italic font-bold text-2xl text-[#1A1A1A]">
-            Set Up Your Advocate Chamber
-          </h2>
-          <p className="text-xs text-[#555555] mt-1 font-sans">
-            Welcome to Advocate360 AI. Create your private chamber profile to isolate and manage your litigation matters securely.
+          <h2 className="text-xl font-bold text-[#0B1426]">Set up your advocate chamber</h2>
+          <p className="text-xs text-[#475569] mt-1">
+            Create your isolated chamber workspace to manage matters, hearings, tasks, and verified client access.
           </p>
         </div>
 
         {error && (
-          <div className="p-3 bg-[#FFF4F2] border border-[#FF4444] text-[#FF4444] text-xs font-bold font-sans">
-            {error}
+          <div
+            role="alert"
+            className="p-3 bg-[#FEF2F2] border border-[#FECACA] text-[#B91C1C] rounded-lg text-xs font-medium flex items-start gap-2"
+          >
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>{error}</span>
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-4 text-xs font-sans">
-          
+        <form onSubmit={handleSubmit} className="space-y-4 text-xs">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className="block font-bold uppercase tracking-wider text-[10px] text-[#1A1A1A] mb-1">
-                Advocate Full Name *
+              <label className="block font-semibold text-xs text-[#0B1426] mb-1">
+                Advocate full name <span className="text-[#B91C1C]">*</span>
               </label>
               <input
                 type="text"
                 value={advocateName}
-                onChange={e => setAdvocateName(e.target.value)}
+                onChange={(e) => setAdvocateName(e.target.value)}
                 required
                 placeholder="e.g. Adv. Ramesh Kumar"
-                className="w-full p-2.5 bg-[#F9F7F5] border border-[#1A1A1A] text-[#1A1A1A] focus:outline-none"
+                className="w-full px-3 py-2 bg-white border border-[#CBD5E1] rounded-lg text-sm text-[#0B1426] focus:outline-none focus:border-[#0B1426] focus:ring-1 focus:ring-[#C49A36]"
               />
             </div>
 
             <div>
-              <label className="block font-bold uppercase tracking-wider text-[10px] text-[#1A1A1A] mb-1">
-                Chamber / Practice Name *
+              <label className="block font-semibold text-xs text-[#0B1426] mb-1">
+                Chamber / practice name <span className="text-[#B91C1C]">*</span>
               </label>
               <input
                 type="text"
                 value={chamberName}
-                onChange={e => setChamberName(e.target.value)}
+                onChange={(e) => setChamberName(e.target.value)}
                 required
-                placeholder="e.g. Ramesh Kumar & Associates Law Chambers"
-                className="w-full p-2.5 bg-[#F9F7F5] border border-[#1A1A1A] text-[#1A1A1A] focus:outline-none"
+                placeholder="e.g. Ramesh Kumar Law Chambers"
+                className="w-full px-3 py-2 bg-white border border-[#CBD5E1] rounded-lg text-sm text-[#0B1426] focus:outline-none focus:border-[#0B1426] focus:ring-1 focus:ring-[#C49A36]"
               />
             </div>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className="block font-bold uppercase tracking-wider text-[10px] text-[#1A1A1A] mb-1">
-                Bar Council Enrollment No (Optional)
+              <label className="block font-semibold text-xs text-[#0B1426] mb-1">
+                Bar Council enrollment number
               </label>
               <input
                 type="text"
                 value={enrollmentNo}
-                onChange={e => setEnrollmentNo(e.target.value)}
-                placeholder="e.g. MAH/2041/2018"
-                className="w-full p-2.5 bg-[#F9F7F5] border border-[#1A1A1A] text-[#1A1A1A] focus:outline-none font-mono"
+                onChange={(e) => setEnrollmentNo(e.target.value)}
+                placeholder="e.g. TN/2041/2018"
+                className="w-full px-3 py-2 bg-white border border-[#CBD5E1] rounded-lg text-sm text-[#0B1426] font-mono focus:outline-none focus:border-[#0B1426] focus:ring-1 focus:ring-[#C49A36]"
               />
             </div>
 
             <div>
-              <label className="block font-bold uppercase tracking-wider text-[10px] text-[#1A1A1A] mb-1">
+              <label className="block font-semibold text-xs text-[#0B1426] mb-1">
                 State Bar Council
               </label>
               <select
                 value={stateBarCouncil}
-                onChange={e => setStateBarCouncil(e.target.value)}
-                className="w-full p-2.5 bg-[#F9F7F5] border border-[#1A1A1A] text-[#1A1A1A] focus:outline-none"
+                onChange={(e) => setStateBarCouncil(e.target.value)}
+                className="w-full px-3 py-2 bg-white border border-[#CBD5E1] rounded-lg text-sm text-[#0B1426] focus:outline-none focus:border-[#0B1426] focus:ring-1 focus:ring-[#C49A36]"
               >
                 {STATE_BAR_COUNCILS.map((bc, idx) => (
-                  <option key={idx} value={bc}>{bc}</option>
+                  <option key={idx} value={bc}>
+                    {bc}
+                  </option>
                 ))}
               </select>
             </div>
@@ -174,44 +173,47 @@ export const PracticeSetupModal: React.FC<PracticeSetupModalProps> = ({
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className="block font-bold uppercase tracking-wider text-[10px] text-[#1A1A1A] mb-1">
-                Chamber Office / Court Location
+              <label className="block font-semibold text-xs text-[#0B1426] mb-1">
+                Chamber office / court location
               </label>
               <input
                 type="text"
                 value={officeLocation}
-                onChange={e => setOfficeLocation(e.target.value)}
-                placeholder="e.g. High Court Chamber Block B, New Delhi"
-                className="w-full p-2.5 bg-[#F9F7F5] border border-[#1A1A1A] text-[#1A1A1A] focus:outline-none"
+                onChange={(e) => setOfficeLocation(e.target.value)}
+                placeholder="e.g. High Court Chamber Block B"
+                className="w-full px-3 py-2 bg-white border border-[#CBD5E1] rounded-lg text-sm text-[#0B1426] focus:outline-none focus:border-[#0B1426] focus:ring-1 focus:ring-[#C49A36]"
               />
             </div>
 
             <div>
-              <label className="block font-bold uppercase tracking-wider text-[10px] text-[#1A1A1A] mb-1">
-                Contact Phone Number
+              <label className="block font-semibold text-xs text-[#0B1426] mb-1">
+                Contact phone number
               </label>
               <input
                 type="text"
                 value={phone}
-                onChange={e => setPhone(e.target.value)}
+                onChange={(e) => setPhone(e.target.value)}
                 placeholder="e.g. +91 98765 43210"
-                className="w-full p-2.5 bg-[#F9F7F5] border border-[#1A1A1A] text-[#1A1A1A] focus:outline-none"
+                className="w-full px-3 py-2 bg-white border border-[#CBD5E1] rounded-lg text-sm text-[#0B1426] focus:outline-none focus:border-[#0B1426] focus:ring-1 focus:ring-[#C49A36]"
               />
             </div>
           </div>
 
           <div>
-            <label className="block font-bold uppercase tracking-wider text-[10px] text-[#1A1A1A] mb-1">
-              Primary Practice Areas
+            <label className="block font-semibold text-xs text-[#0B1426] mb-1.5">
+              Primary practice areas
             </label>
-            <div className="grid grid-cols-2 gap-2 mt-1">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {PRACTICE_AREAS.map((area, idx) => (
-                <label key={idx} className="flex items-center gap-2 text-[11px] p-2 bg-[#F5F2EF] border border-[#1A1A1A]/40 cursor-pointer">
+                <label
+                  key={idx}
+                  className="flex items-center gap-2 text-xs p-2.5 bg-[#F6F5F1] border border-[#E2DFD7] rounded-lg cursor-pointer hover:border-[#0B1426]/40"
+                >
                   <input
                     type="checkbox"
                     checked={selectedAreas.includes(area)}
                     onChange={() => toggleArea(area)}
-                    className="accent-[#B45309]"
+                    className="accent-[#0B1426]"
                   />
                   <span>{area}</span>
                 </label>
@@ -219,24 +221,24 @@ export const PracticeSetupModal: React.FC<PracticeSetupModalProps> = ({
             </div>
           </div>
 
-          <div className="p-3 bg-[#F5F2EF] border border-[#1A1A1A]/30 text-[11px] text-[#555555] font-serif italic flex items-center gap-2">
-            <ShieldCheck className="w-4 h-4 text-[#B45309] shrink-0" />
-            <span>Your chamber profile creates an isolated multi-tenant data space (<code className="text-[#1A1A1A] font-mono">/chambers/&#123;id&#125;</code>) accessible only by you and your authorized staff.</span>
+          <div className="p-3 bg-[#F6F5F1] border border-[#E2DFD7] rounded-lg text-xs text-[#475569] flex items-center gap-2">
+            <ShieldCheck className="w-4 h-4 text-[#C49A36] shrink-0" />
+            <span>
+              Your chamber profile creates an isolated multi-tenant workspace accessible only to you and authorized staff.
+            </span>
           </div>
 
           <div className="flex justify-end pt-2">
             <button
               type="submit"
               disabled={isSubmitting}
-              className="bg-[#1A1A1A] hover:bg-black text-amber-400 font-bold uppercase tracking-wider text-xs px-8 py-3.5 border border-[#1A1A1A] flex items-center gap-2 transition-colors disabled:opacity-50"
+              className="bg-[#0B1426] hover:bg-[#16233D] text-white font-semibold text-xs px-6 py-3 rounded-lg flex items-center gap-2 transition-colors disabled:opacity-50 cursor-pointer"
             >
-              <span>{isSubmitting ? 'Registering Chamber...' : 'Create Practice & Enter Workspace'}</span>
-              <ArrowRight className="w-4 h-4 text-amber-400" />
+              <span>{isSubmitting ? 'Creating workspace...' : 'Create workspace'}</span>
+              <ArrowRight className="w-4 h-4 text-[#C49A36]" />
             </button>
           </div>
-
         </form>
-
       </div>
     </div>
   );

@@ -46,37 +46,37 @@ export const Dialog: React.FC<DialogProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-2xs animate-in fade-in duration-150">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#0B1426]/60 backdrop-blur-2xs animate-in fade-in duration-150">
       <div 
-        className={`w-full bg-white border border-slate-200 rounded-lg shadow-xl text-slate-900 overflow-hidden flex flex-col ${maxWidthClasses[maxWidth]}`}
+        className={`w-full bg-white border border-[#E2DFD7] rounded-xl shadow-xl text-[#0B1426] overflow-hidden flex flex-col ${maxWidthClasses[maxWidth]}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby="dialog-title"
       >
-        <div className="p-4 sm:p-5 border-b border-slate-200 flex items-start justify-between gap-3 bg-slate-50/50">
+        <div className="p-4 sm:p-5 border-b border-[#E2DFD7] flex items-start justify-between gap-3 bg-[#FAF9F6]">
           <div className="space-y-0.5">
-            <h3 id="dialog-title" className="font-serif italic font-bold text-lg text-slate-900">
+            <h3 id="dialog-title" className="font-sans font-bold text-lg text-[#0B1426]">
               {title}
             </h3>
             {description && (
-              <p className="text-xs text-slate-600 font-sans">{description}</p>
+              <p className="text-xs text-[#4B5565] font-sans">{description}</p>
             )}
           </div>
           <button
             onClick={onClose}
-            className="p-1 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-md transition-colors cursor-pointer"
+            className="p-1.5 text-[#4B5565] hover:text-[#0B1426] hover:bg-[#EFECE4] rounded-lg transition-colors cursor-pointer"
             aria-label="Close dialog"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        <div className="p-4 sm:p-5 overflow-y-auto max-h-[calc(80vh-120px)] space-y-4 text-xs font-sans">
+        <div className="p-4 sm:p-5 overflow-y-auto max-h-[calc(80vh-120px)] space-y-4 text-sm font-sans">
           {children}
         </div>
 
         {footer && (
-          <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-2.5">
+          <div className="p-4 bg-[#FAF9F6] border-t border-[#E2DFD7] flex items-center justify-end gap-2.5">
             {footer}
           </div>
         )}

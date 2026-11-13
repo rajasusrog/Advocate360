@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Scale, AlertTriangle } from 'lucide-react';
+import { X, Briefcase, AlertTriangle } from 'lucide-react';
 import { CaseFile } from '../types';
 
 interface NewCaseModalProps {
@@ -43,7 +43,7 @@ export const NewCaseModal: React.FC<NewCaseModalProps> = ({ isOpen, onClose, onA
       status: 'Intake',
       clientName: clientName.trim(),
       courtName: courtName.trim() || 'Court Not Specified',
-      summary: summary.trim() || 'New case file opened via Advocate360 AI.',
+      summary: summary.trim() || 'New matter created in Advocate360.',
       createdAt: new Date().toISOString().split('T')[0],
       updatedAt: new Date().toISOString().split('T')[0],
     };
@@ -65,7 +65,7 @@ export const NewCaseModal: React.FC<NewCaseModalProps> = ({ isOpen, onClose, onA
       // Preserve unsaved form inputs and display visible error message
       setSaveError(
         err?.message ||
-          'Failed to save matter to PostgreSQL. Your input has been preserved — please retry.'
+          'Failed to save matter. Your input has been preserved — please review and retry.'
       );
     } finally {
       setIsSaving(false);
@@ -73,20 +73,28 @@ export const NewCaseModal: React.FC<NewCaseModalProps> = ({ isOpen, onClose, onA
   };
 
   return (
-    <div className="fixed inset-0 bg-[#1A1A1A]/80 backdrop-blur-xs z-50 flex items-center justify-center p-4">
-      <div className="bg-[#FDFCFB] border-2 border-[#1A1A1A] p-6 max-w-lg w-full shadow-2xl space-y-4 text-[#1A1A1A]">
-        <div className="flex items-center justify-between border-b border-[#1A1A1A] pb-3">
-          <div className="flex items-center gap-2">
-            <Scale className="w-5 h-5 text-[#B45309]" />
-            <h3 className="font-serif italic font-bold text-lg text-[#1A1A1A]">
-              Open New Legal Case File
+    <div
+      className="fixed inset-0 bg-[#0B1426]/65 backdrop-blur-xs z-50 flex items-center justify-center p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="add-matter-modal-title"
+    >
+      <div className="bg-white border border-[#E2DFD7] rounded-2xl p-6 max-w-lg w-full shadow-2xl space-y-4 text-[#0B1426]">
+        <div className="flex items-center justify-between border-b border-[#E2DFD7] pb-3.5">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-[#0B1426] text-[#C49A36] flex items-center justify-center">
+              <Briefcase className="w-4 h-4" />
+            </div>
+            <h3 id="add-matter-modal-title" className="font-bold text-lg text-[#0B1426]">
+              Add matter
             </h3>
           </div>
           <button
             type="button"
             onClick={onClose}
             disabled={isSaving}
-            className="p-1 text-[#1A1A1A] hover:text-[#B45309] disabled:opacity-50"
+            aria-label="Close Add matter dialog"
+            className="p-1.5 rounded-lg text-[#64748B] hover:text-[#0B1426] hover:bg-[#F6F5F1] disabled:opacity-50 cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
@@ -95,56 +103,56 @@ export const NewCaseModal: React.FC<NewCaseModalProps> = ({ isOpen, onClose, onA
         {saveError && (
           <div
             role="alert"
-            className="p-3 bg-rose-50 border-2 border-rose-700 text-rose-900 text-xs flex items-start gap-2"
+            className="p-3 bg-[#FEF2F2] border border-[#FECACA] rounded-lg text-[#B91C1C] text-xs flex items-start gap-2"
           >
-            <AlertTriangle className="w-4 h-4 text-rose-700 shrink-0 mt-0.5" />
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
             <div>
-              <p className="font-bold uppercase text-[10px]">Matter Save Failed</p>
+              <p className="font-semibold">Unable to save matter</p>
               <p className="mt-0.5">{saveError}</p>
             </div>
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-3 text-xs">
+        <form onSubmit={handleSubmit} className="space-y-3.5 text-xs">
           <div>
-            <label className="font-bold uppercase tracking-wider text-[10px] text-[#1A1A1A]">
-              Case Title / Cause Title:*
+            <label className="block font-semibold text-xs text-[#0B1426]">
+              Matter title / Cause title <span className="text-[#B91C1C]">*</span>
             </label>
             <input
               type="text"
               required
               disabled={isSaving}
-              placeholder="e.g. Ramesh Kumar vs. Suresh Kumar"
+              placeholder="e.g. Meenakshi Textiles vs. Kavitha Builders"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              className="w-full p-2.5 bg-[#F9F7F5] border border-[#1A1A1A] text-[#1A1A1A] mt-1 focus:outline-none focus:ring-1 focus:ring-[#B45309]"
+              className="w-full px-3 py-2 bg-white border border-[#CBD5E1] rounded-lg text-sm text-[#0B1426] mt-1 focus:outline-none focus:border-[#0B1426] focus:ring-1 focus:ring-[#C49A36]"
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="font-bold uppercase tracking-wider text-[10px] text-[#1A1A1A]">
-                Case Number / Forum ID:
+              <label className="block font-semibold text-xs text-[#0B1426]">
+                Case number / Forum ID
               </label>
               <input
                 type="text"
                 disabled={isSaving}
-                placeholder="e.g. O.S. 402/2024"
+                placeholder="e.g. O.S. 402/2026"
                 value={caseNumber}
                 onChange={(e) => setCaseNumber(e.target.value)}
-                className="w-full p-2.5 bg-[#F9F7F5] border border-[#1A1A1A] text-[#1A1A1A] mt-1 focus:outline-none focus:ring-1 focus:ring-[#B45309]"
+                className="w-full px-3 py-2 bg-white border border-[#CBD5E1] rounded-lg text-sm text-[#0B1426] mt-1 focus:outline-none focus:border-[#0B1426] focus:ring-1 focus:ring-[#C49A36]"
               />
             </div>
 
             <div>
-              <label className="font-bold uppercase tracking-wider text-[10px] text-[#1A1A1A]">
-                Case Category:*
+              <label className="block font-semibold text-xs text-[#0B1426]">
+                Case category <span className="text-[#B91C1C]">*</span>
               </label>
               <select
                 disabled={isSaving}
                 value={caseType}
-                onChange={(e) => setCaseType(e.target.value as any)}
-                className="w-full p-2.5 bg-[#F9F7F5] border border-[#1A1A1A] text-[#1A1A1A] mt-1 focus:outline-none focus:ring-1 focus:ring-[#B45309]"
+                onChange={(e) => setCaseType(e.target.value as CaseFile['caseType'])}
+                className="w-full px-3 py-2 bg-white border border-[#CBD5E1] rounded-lg text-sm text-[#0B1426] mt-1 focus:outline-none focus:border-[#0B1426] focus:ring-1 focus:ring-[#C49A36]"
               >
                 <option value="Property Dispute">Property Dispute</option>
                 <option value="Contract & Recovery">Contract & Recovery</option>
@@ -156,10 +164,10 @@ export const NewCaseModal: React.FC<NewCaseModalProps> = ({ isOpen, onClose, onA
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="font-bold uppercase tracking-wider text-[10px] text-[#1A1A1A]">
-                Client Name:*
+              <label className="block font-semibold text-xs text-[#0B1426]">
+                Client name <span className="text-[#B91C1C]">*</span>
               </label>
               <input
                 type="text"
@@ -168,42 +176,42 @@ export const NewCaseModal: React.FC<NewCaseModalProps> = ({ isOpen, onClose, onA
                 placeholder="Client full name"
                 value={clientName}
                 onChange={(e) => setClientName(e.target.value)}
-                className="w-full p-2.5 bg-[#F9F7F5] border border-[#1A1A1A] text-[#1A1A1A] mt-1 focus:outline-none focus:ring-1 focus:ring-[#B45309]"
+                className="w-full px-3 py-2 bg-white border border-[#CBD5E1] rounded-lg text-sm text-[#0B1426] mt-1 focus:outline-none focus:border-[#0B1426] focus:ring-1 focus:ring-[#C49A36]"
               />
             </div>
 
             <div>
-              <label className="font-bold uppercase tracking-wider text-[10px] text-[#1A1A1A]">
-                Opposite Party:
+              <label className="block font-semibold text-xs text-[#0B1426]">
+                Opposite party
               </label>
               <input
                 type="text"
                 disabled={isSaving}
-                placeholder="Opposing party / company"
+                placeholder="Opposing party / organization"
                 value={oppositeParty}
                 onChange={(e) => setOppositeParty(e.target.value)}
-                className="w-full p-2.5 bg-[#F9F7F5] border border-[#1A1A1A] text-[#1A1A1A] mt-1 focus:outline-none focus:ring-1 focus:ring-[#B45309]"
+                className="w-full px-3 py-2 bg-white border border-[#CBD5E1] rounded-lg text-sm text-[#0B1426] mt-1 focus:outline-none focus:border-[#0B1426] focus:ring-1 focus:ring-[#C49A36]"
               />
             </div>
           </div>
 
           <div>
-            <label className="font-bold uppercase tracking-wider text-[10px] text-[#1A1A1A]">
-              Court / Forum Name:
+            <label className="block font-semibold text-xs text-[#0B1426]">
+              Court / Forum name
             </label>
             <input
               type="text"
               disabled={isSaving}
-              placeholder="e.g. City Civil Court, Hall 18"
+              placeholder="e.g. City Civil Court, Chennai"
               value={courtName}
               onChange={(e) => setCourtName(e.target.value)}
-              className="w-full p-2.5 bg-[#F9F7F5] border border-[#1A1A1A] text-[#1A1A1A] mt-1 focus:outline-none focus:ring-1 focus:ring-[#B45309]"
+              className="w-full px-3 py-2 bg-white border border-[#CBD5E1] rounded-lg text-sm text-[#0B1426] mt-1 focus:outline-none focus:border-[#0B1426] focus:ring-1 focus:ring-[#C49A36]"
             />
           </div>
 
           <div>
-            <label className="font-bold uppercase tracking-wider text-[10px] text-[#1A1A1A]">
-              Brief Case Summary:
+            <label className="block font-semibold text-xs text-[#0B1426]">
+              Brief case summary
             </label>
             <textarea
               disabled={isSaving}
@@ -211,25 +219,25 @@ export const NewCaseModal: React.FC<NewCaseModalProps> = ({ isOpen, onClose, onA
               value={summary}
               onChange={(e) => setSummary(e.target.value)}
               rows={3}
-              className="w-full p-2.5 bg-[#F9F7F5] border border-[#1A1A1A] text-[#1A1A1A] mt-1 resize-none focus:outline-none focus:ring-1 focus:ring-[#B45309]"
+              className="w-full px-3 py-2 bg-white border border-[#CBD5E1] rounded-lg text-sm text-[#0B1426] mt-1 resize-none focus:outline-none focus:border-[#0B1426] focus:ring-1 focus:ring-[#C49A36]"
             />
           </div>
 
-          <div className="flex items-center gap-3 pt-3 border-t border-[#1A1A1A]/20">
+          <div className="flex items-center gap-3 pt-3 border-t border-[#E2DFD7]">
             <button
               type="button"
               disabled={isSaving}
               onClick={onClose}
-              className="flex-1 py-2.5 bg-[#F5F2EF] text-[#1A1A1A] border border-[#1A1A1A] font-bold uppercase tracking-wider text-xs disabled:opacity-50"
+              className="flex-1 py-2.5 bg-white hover:bg-[#F6F5F1] text-[#0B1426] border border-[#E2DFD7] rounded-lg font-semibold text-xs disabled:opacity-50 cursor-pointer"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={isSaving}
-              className="flex-1 py-2.5 bg-[#1A1A1A] hover:bg-black text-amber-400 font-bold uppercase tracking-wider text-xs border border-[#1A1A1A] disabled:opacity-50"
+              className="flex-1 py-2.5 bg-[#0B1426] hover:bg-[#16233D] text-white rounded-lg font-semibold text-xs disabled:opacity-50 cursor-pointer"
             >
-              {isSaving ? 'Saving Matter...' : 'Open Case File'}
+              {isSaving ? 'Saving matter...' : 'Add matter'}
             </button>
           </div>
         </form>

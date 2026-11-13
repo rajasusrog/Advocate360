@@ -68,6 +68,7 @@ interface BillingModuleProps {
   setSelectedCaseId: (id: string) => void;
   onNavigateTab?: (tab: string) => void;
   currentRole?: ChamberRole;
+  scopedMatterId?: string;
 }
 
 // Initial Sample Time Logs for realistic legal chamber demo
@@ -214,7 +215,8 @@ export const BillingModule: React.FC<BillingModuleProps> = ({
   selectedCaseId,
   setSelectedCaseId,
   onNavigateTab,
-  currentRole = 'CHAMBER_OWNER'
+  currentRole = 'CHAMBER_OWNER',
+  scopedMatterId
 }) => {
   // State
   const [activeSubTab, setActiveSubTab] = useState<'overview' | 'timelogs' | 'invoices' | 'payments'>('timelogs');
@@ -232,7 +234,7 @@ export const BillingModule: React.FC<BillingModuleProps> = ({
   });
 
   // Filter states
-  const [filterCaseId, setFilterCaseId] = useState<string>('all');
+  const [filterCaseId, setFilterCaseId] = useState<string>(scopedMatterId || 'all');
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
 
@@ -339,13 +341,17 @@ export const BillingModule: React.FC<BillingModuleProps> = ({
     notes: 'Payment received towards legal invoice balance'
   });
 
-  // Keep Timer Case ID synced if selectedCaseId changes externally
+  // Keep Timer Case ID synced if selectedCaseId or scopedMatterId changes externally
   useEffect(() => {
-    if (selectedCaseId) {
-      setTimerCaseId(selectedCaseId);
-      setNewLogData(prev => ({ ...prev, caseId: selectedCaseId }));
+    const targetId = scopedMatterId || selectedCaseId;
+    if (scopedMatterId) {
+      setFilterCaseId(scopedMatterId);
     }
-  }, [selectedCaseId]);
+    if (targetId) {
+      setTimerCaseId(targetId);
+      setNewLogData(prev => ({ ...prev, caseId: targetId }));
+    }
+  }, [selectedCaseId, scopedMatterId]);
 
   // Supabase PostgreSQL Sync for TimeLogs, Invoices, and Payments
   useEffect(() => {

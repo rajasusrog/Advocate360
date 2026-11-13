@@ -17,6 +17,8 @@ import {
   listTasksForWorkspace,
   createTaskInDb,
   updateTaskInDb,
+  listHearingsForWorkspace,
+  createHearingInDb,
   listActiveClientGrantsForUser,
 } from './lib/useMatterData';
 
@@ -37,6 +39,7 @@ import { AskAdvocateAssistant } from './components/AskAdvocateAssistant';
 
 // Modals & Utility Drawers
 import { NewCaseModal } from './components/NewCaseModal';
+import { ScheduleHearingModal, ScheduleHearingInput } from './components/ScheduleHearingModal';
 import { GlobalSearchModal } from './components/GlobalSearchModal';
 import { NotificationCenter } from './components/NotificationCenter';
 import { RoleManagerModal } from './components/RoleManagerModal';
@@ -65,7 +68,7 @@ import {
 } from './data/landingDemoData';
 import { logAuditEvent } from './lib/auditLogger';
 import { hasPermission } from './lib/permissions';
-import { Scale, AlertTriangle } from 'lucide-react';
+import { AlertTriangle } from 'lucide-react';
 
 function mapSupabaseUser(sbUser: any): HeaderUser {
   const fullName =
@@ -122,8 +125,11 @@ export default function App() {
   });
 
   // Modals & Drawers
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
   const [isAskAssistantOpen, setIsAskAssistantOpen] = useState<boolean>(false);
   const [isNewCaseModalOpen, setIsNewCaseModalOpen] = useState<boolean>(false);
+  const [isScheduleHearingOpen, setIsScheduleHearingOpen] = useState<boolean>(false);
+  const [scheduleHearingMatterId, setScheduleHearingMatterId] = useState<string>('');
   const [isSearchOpen, setIsSearchOpen] = useState<boolean>(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState<boolean>(false);
   const [isRoleManagerOpen, setIsRoleManagerOpen] = useState<boolean>(false);
@@ -168,8 +174,14 @@ export default function App() {
           listMattersForWorkspace(activeChamber.id),
           listTasksForWorkspace(activeChamber.id).catch(() => [] as PracticeTask[]),
         ]);
+        const loadedHearings = await listHearingsForWorkspace(
+          activeChamber.id,
+          loadedMatters
+        ).catch(() => [] as CalendarEvent[]);
+
         setCases(loadedMatters);
         setTasks(loadedTasks);
+        setCalendarEvents(loadedHearings);
         if (loadedMatters.length === 0) {
           setSelectedCaseId('');
         } else {
@@ -329,10 +341,15 @@ export default function App() {
       listMattersForWorkspace(chamber.id),
       listTasksForWorkspace(chamber.id).catch(() => [] as PracticeTask[]),
     ])
-      .then(([loadedMatters, loadedTasks]) => {
+      .then(async ([loadedMatters, loadedTasks]) => {
+        if (!active) return;
+        const loadedHearings = await listHearingsForWorkspace(chamber.id, loadedMatters).catch(
+          () => [] as CalendarEvent[]
+        );
         if (!active) return;
         setCases(loadedMatters);
         setTasks(loadedTasks);
+        setCalendarEvents(loadedHearings);
         if (loadedMatters.length === 0) {
           setSelectedCaseId('');
         } else if (!selectedCaseId || !loadedMatters.some((c) => c.id === selectedCaseId)) {
@@ -340,7 +357,7 @@ export default function App() {
         }
       })
       .catch((err) => {
-        console.error('PostgreSQL matters/tasks sync error:', err);
+        console.error('PostgreSQL matters/tasks/hearings sync error:', err);
       });
 
     return () => {
@@ -459,6 +476,72 @@ export default function App() {
     setNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })));
   };
 
+  const handleOpenScheduleHearing = useCallback(
+    (matterId?: string) => {
+      setScheduleHearingMatterId(matterId || selectedCaseId || cases[0]?.id || '');
+      setIsScheduleHearingOpen(true);
+    },
+    [cases, selectedCaseId]
+  );
+
+  const handleCreateHearing = useCallback(
+    async (input: ScheduleHearingInput) => {
+      const targetMatter = cases.find((c) => c.id === input.matterId);
+      if (isDemoMode || !chamber?.id) {
+        const localEvent: CalendarEvent = {
+          id: `hearing-${Date.now()}`,
+          caseId: input.matterId,
+          caseTitle: targetMatter?.title || 'Matter',
+          date: input.date,
+          time: input.time || '10:30 AM',
+          court: input.courtName || targetMatter?.courtName || 'Court Not Specified',
+          hearingType: input.purpose,
+          judge: input.judgeOrBench || undefined,
+          status: 'Scheduled',
+        };
+        setCalendarEvents((prev) =>
+          [...prev, localEvent].sort((a, b) => a.date.localeCompare(b.date))
+        );
+        setCases((prev) =>
+          prev.map((c) =>
+            c.id === input.matterId
+              ? { ...c, nextHearingDate: input.date, courtName: input.courtName || c.courtName }
+              : c
+          )
+        );
+        return;
+      }
+
+      setMatterPersistenceError(null);
+      try {
+        const savedEvent = await createHearingInDb(chamber.id, input, cases);
+        setCalendarEvents((prev) =>
+          [...prev, savedEvent].sort((a, b) => a.date.localeCompare(b.date))
+        );
+        setCases((prev) =>
+          prev.map((c) =>
+            c.id === input.matterId
+              ? {
+                  ...c,
+                  nextHearingDate: input.date,
+                  courtName: input.courtName || c.courtName,
+                  updatedAt: new Date().toISOString().split('T')[0],
+                }
+              : c
+          )
+        );
+        logAuditEvent('CASE_UPDATE', `Scheduled hearing for ${savedEvent.caseTitle} on ${input.date}`);
+      } catch (err: any) {
+        console.error('PostgreSQL schedule hearing error:', err);
+        setMatterPersistenceError(
+          err?.message || 'Failed to schedule hearing in PostgreSQL. Unsaved input preserved.'
+        );
+        throw err;
+      }
+    },
+    [cases, chamber?.id, isDemoMode]
+  );
+
   // Toggle Isolated Demo Sandbox Mode
   const handleToggleDemoMode = (enabled: boolean) => {
     setIsDemoMode(enabled);
@@ -481,9 +564,14 @@ export default function App() {
           listMattersForWorkspace(chamber.id),
           listTasksForWorkspace(chamber.id).catch(() => [] as PracticeTask[]),
         ])
-          .then(([loadedMatters, loadedTasks]) => {
+          .then(async ([loadedMatters, loadedTasks]) => {
+            const loadedHearings = await listHearingsForWorkspace(
+              chamber.id,
+              loadedMatters
+            ).catch(() => [] as CalendarEvent[]);
             setCases(loadedMatters);
             setTasks(loadedTasks);
+            setCalendarEvents(loadedHearings);
             setSelectedCaseId(loadedMatters[0]?.id || '');
           })
           .catch(() => {});
@@ -702,16 +790,26 @@ export default function App() {
   // 1. Splash Loading State
   if (authLoading) {
     return (
-      <div className="min-h-screen bg-[#FDFCFB] flex flex-col items-center justify-center p-4 font-sans text-[#1A1A1A]">
-        <div className="p-8 bg-[#F5F2EF] border-2 border-[#1A1A1A] max-w-md w-full text-center space-y-4 shadow-md">
-          <div className="w-12 h-12 bg-[#1A1A1A] text-amber-400 mx-auto flex items-center justify-center font-serif text-xl font-bold border border-[#1A1A1A]">
-            <Scale className="w-6 h-6 text-amber-400 animate-pulse" />
+      <div className="min-h-screen bg-[#F6F5F1] flex flex-col items-center justify-center p-4 font-sans text-[#0B1426]">
+        <div className="p-8 bg-white border border-[#E2DFD7] rounded-2xl max-w-md w-full text-center space-y-4 shadow-sm">
+          <div className="w-16 h-16 bg-white rounded-xl border border-[#E2DFD7] mx-auto flex items-center justify-center p-2 shadow-xs">
+            <img
+              src="/assets/aistudio/ChatGPT_Image_Oct_29__2026__07_20_38_PM_11dd3e23.png"
+              alt="UNIKORN360 emblem"
+              className="w-full h-full object-contain"
+            />
           </div>
           <div className="space-y-1">
-            <h2 className="font-serif italic font-bold text-xl text-[#1A1A1A]">Advocate360 AI</h2>
-            <p className="text-xs text-[#555555]">
-              Initializing Supabase Session & Workspace Security...
+            <h2 className="font-bold text-xl text-[#0B1426] tracking-tight">Advocate360</h2>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#C49A36]">
+              UNIKORN360 Business Intelligence
             </p>
+            <p className="text-xs text-[#64748B] pt-1">
+              Verifying chamber session and workspace security...
+            </p>
+          </div>
+          <div className="h-1 w-32 mx-auto rounded-full bg-[#F6F5F1] overflow-hidden">
+            <div className="h-full w-1/2 bg-[#C49A36] rounded-full animate-pulse" />
           </div>
         </div>
       </div>
@@ -737,11 +835,11 @@ export default function App() {
     return (
       <div>
         {authError && (
-          <div className="bg-amber-900 text-amber-100 text-xs px-4 py-2.5 border-b-2 border-amber-500 flex items-center justify-between">
+          <div className="bg-[#0B1426] text-white text-xs px-4 py-2.5 border-b-2 border-[#C49A36] flex items-center justify-between gap-4">
             <span>{authError}</span>
             <button
               onClick={() => setAuthError(null)}
-              className="px-2 py-0.5 bg-black text-amber-400 font-mono text-[10px] uppercase"
+              className="px-2.5 py-1 bg-white/10 hover:bg-white/20 text-[#C49A36] font-semibold rounded text-[11px] shrink-0 cursor-pointer"
             >
               Dismiss
             </button>
@@ -765,18 +863,18 @@ export default function App() {
           <Route
             path="/auth/callback"
             element={
-              <div className="min-h-screen bg-[#FDFCFB] flex flex-col items-center justify-center p-4">
-                <div className="p-8 bg-[#F5F2EF] border-2 border-[#1A1A1A] max-w-md w-full text-center space-y-4">
-                  <AlertTriangle className="w-8 h-8 text-[#B45309] mx-auto" />
-                  <h2 className="font-serif italic font-bold text-lg">
+              <div className="min-h-screen bg-[#F6F5F1] flex flex-col items-center justify-center p-4 text-[#0B1426]">
+                <div className="p-8 bg-white border border-[#E2DFD7] rounded-2xl max-w-md w-full text-center space-y-4 shadow-sm">
+                  <AlertTriangle className="w-8 h-8 text-[#C49A36] mx-auto" />
+                  <h2 className="font-bold text-lg text-[#0B1426]">
                     {authError ? 'Authentication Callback Failed' : 'Completing Google Sign-In...'}
                   </h2>
-                  <p className="text-xs text-[#555555]">
+                  <p className="text-xs text-[#64748B]">
                     {authError || 'Verifying OAuth session with Supabase Auth...'}
                   </p>
                   <button
                     onClick={() => navigate('/', { replace: true })}
-                    className="px-4 py-2 bg-[#1A1A1A] text-amber-400 text-xs font-bold uppercase"
+                    className="px-4 py-2 bg-[#0B1426] hover:bg-[#16233D] text-white text-xs font-semibold rounded-lg cursor-pointer"
                   >
                     Return to Sign In
                   </button>
@@ -793,7 +891,7 @@ export default function App() {
   // 3. Authenticated User Without Chamber -> Practice Setup (calls create_workspace_with_owner)
   if (isSettingUpPractice) {
     return (
-      <div className="min-h-screen bg-[#FDFCFB]">
+      <div className="min-h-screen bg-[#F6F5F1]">
         <PracticeSetupModal
           userEmail={user.email || ''}
           userDisplayName={user.displayName || ''}
@@ -806,7 +904,7 @@ export default function App() {
 
   // 4. Authenticated Advocate Workspace with Protected URL Router
   return (
-    <div className="min-h-screen bg-[#FDFCFB] text-[#1A1A1A] flex flex-col font-sans selection:bg-[#B45309] selection:text-white">
+    <div className="min-h-screen bg-[#F6F5F1] text-[#0B1426] flex flex-col font-sans selection:bg-[#C49A36]/25 selection:text-[#0B1426]">
       {/* Top Bar Navigation */}
       <Header
         user={user}
@@ -819,6 +917,7 @@ export default function App() {
         onOpenNotifications={() => setIsNotificationsOpen(true)}
         onLogout={handleLogout}
         onToggleAskAssistant={() => setIsAskAssistantOpen(!isAskAssistantOpen)}
+        onToggleMobileMenu={() => setIsMobileMenuOpen((prev) => !prev)}
         unreadNotificationsCount={notifications.filter((n) => !n.isRead).length}
         isDemoMode={isDemoMode}
         onToggleDemoMode={handleToggleDemoMode}
@@ -826,21 +925,20 @@ export default function App() {
 
       {/* Isolated Demo Sandbox Banner */}
       {isDemoMode && (
-        <div className="bg-amber-900 text-amber-100 text-xs px-4 py-2 border-b-2 border-amber-500 flex items-center justify-between shadow-xs">
-          <div className="flex items-center gap-2 font-mono">
-            <span className="bg-amber-400 text-black font-bold px-2 py-0.5 text-[9px] uppercase tracking-wider">
-              ISOLATED DEMO SANDBOX
+        <div className="bg-[#0B1426] text-[#F6F5F1] text-xs px-4 py-2 border-b-2 border-[#C49A36] flex flex-wrap items-center justify-between gap-2 shadow-xs">
+          <div className="flex items-center gap-2">
+            <span className="bg-[#C49A36] text-[#0B1426] font-semibold px-2 py-0.5 rounded text-[10px] uppercase tracking-wider">
+              Demo preview
             </span>
             <span>
-              Sample data preview active. Live chamber writes and protected production APIs are
-              disabled.
+              Sample data active. Live chamber writes and external integrations are isolated.
             </span>
           </div>
           <button
             onClick={() => handleToggleDemoMode(false)}
-            className="bg-white text-black font-bold px-3 py-1 text-[10px] uppercase hover:bg-amber-100 transition-colors cursor-pointer"
+            className="bg-white text-[#0B1426] font-semibold px-3 py-1 rounded text-[11px] hover:bg-[#F6F5F1] transition-colors cursor-pointer"
           >
-            Exit Demo Mode
+            Exit demo mode
           </button>
         </div>
       )}
@@ -849,15 +947,15 @@ export default function App() {
       {matterPersistenceError && (
         <div
           role="alert"
-          className="bg-rose-900 text-rose-100 text-xs px-4 py-2.5 border-b-2 border-rose-500 flex items-center justify-between shadow-xs"
+          className="bg-[#991B1B] text-white text-xs px-4 py-2.5 border-b border-[#7F1D1D] flex items-center justify-between gap-3 shadow-xs"
         >
           <div className="flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-amber-300 shrink-0" />
+            <AlertTriangle className="w-4 h-4 text-[#FDE68A] shrink-0" />
             <span>{matterPersistenceError}</span>
           </div>
           <button
             onClick={() => setMatterPersistenceError(null)}
-            className="bg-black text-amber-400 font-mono font-bold px-2.5 py-0.5 text-[10px] uppercase cursor-pointer"
+            className="bg-black/25 hover:bg-black/40 text-white font-semibold px-2.5 py-1 rounded text-[11px] cursor-pointer shrink-0"
           >
             Dismiss
           </button>
@@ -875,11 +973,13 @@ export default function App() {
           }}
           currentRole={currentRole}
           isDemoMode={isDemoMode}
+          isMobileOpen={isMobileMenuOpen}
+          onCloseMobile={() => setIsMobileMenuOpen(false)}
         />
 
         {/* Right Workspace View Area */}
-        <div className="flex-1 flex flex-col min-w-0 overflow-y-auto bg-[#FDFCFB]">
-          <div className="flex-1 max-w-[1700px] w-full mx-auto p-4 sm:p-6">
+        <div className="flex-1 flex flex-col min-w-0 overflow-y-auto bg-[#F6F5F1]">
+          <div className="flex-1 max-w-[1600px] w-full mx-auto p-4 sm:p-6">
             <Routes>
               {/* Main Navigation Sub-Routes */}
               <Route
@@ -896,6 +996,7 @@ export default function App() {
                     notifications={notifications}
                     onNavigateTab={(tab) => navigate(`/app/${tab}`)}
                     onOpenNewCaseModal={() => setIsNewCaseModalOpen(true)}
+                    onOpenScheduleHearing={handleOpenScheduleHearing}
                     onToggleTask={handleToggleTask}
                     onCreateTask={handleCreateTask}
                     onMarkNotificationAsRead={handleMarkNotificationAsRead}
@@ -903,6 +1004,8 @@ export default function App() {
                     onUpdateCases={handleUpdateCases}
                     onUpdateTasks={handleUpdateTasks}
                     initialTaskViewMode="list"
+                    viewMode="today"
+                    isDemoMode={isDemoMode}
                   />
                 }
               />
@@ -921,6 +1024,7 @@ export default function App() {
                     notifications={notifications}
                     onNavigateTab={(tab) => navigate(`/app/${tab}`)}
                     onOpenNewCaseModal={() => setIsNewCaseModalOpen(true)}
+                    onOpenScheduleHearing={handleOpenScheduleHearing}
                     onToggleTask={handleToggleTask}
                     onCreateTask={handleCreateTask}
                     onMarkNotificationAsRead={handleMarkNotificationAsRead}
@@ -928,6 +1032,8 @@ export default function App() {
                     onUpdateCases={handleUpdateCases}
                     onUpdateTasks={handleUpdateTasks}
                     initialTaskViewMode="list"
+                    viewMode="matters"
+                    isDemoMode={isDemoMode}
                     onAddCaseFromIntake={handleAddCaseFromIntake}
                   />
                 }
@@ -959,6 +1065,7 @@ export default function App() {
                     notifications={notifications}
                     onNavigateTab={(tab) => navigate(`/app/${tab}`)}
                     onOpenNewCaseModal={() => setIsNewCaseModalOpen(true)}
+                    onOpenScheduleHearing={handleOpenScheduleHearing}
                     onToggleTask={handleToggleTask}
                     onCreateTask={handleCreateTask}
                     onMarkNotificationAsRead={handleMarkNotificationAsRead}
@@ -966,6 +1073,8 @@ export default function App() {
                     onUpdateCases={handleUpdateCases}
                     onUpdateTasks={handleUpdateTasks}
                     initialTaskViewMode="dag"
+                    viewMode="work"
+                    isDemoMode={isDemoMode}
                   />
                 }
               />
@@ -1025,12 +1134,15 @@ export default function App() {
                   <MatterWorkspaceRoute
                     cases={cases}
                     chamber={chamber}
+                    currentRole={currentRole}
                     calendarEvents={calendarEvents}
                     tasks={tasks}
                     feeRecords={feeRecords}
                     notifications={notifications}
                     userEmail={user.email || ''}
+                    isDemoMode={isDemoMode}
                     onOpenDigitalSignature={() => setIsDigitalSigOpen(true)}
+                    onOpenScheduleHearing={handleOpenScheduleHearing}
                     onToggleTask={handleToggleTask}
                     onCreateTask={handleCreateTask}
                     onUpdateTasks={handleUpdateTasks}
@@ -1088,15 +1200,15 @@ export default function App() {
               <Route
                 path="*"
                 element={
-                  <div className="p-8 bg-[#FDFCFB] border-2 border-[#1A1A1A] max-w-md mx-auto my-12 text-center space-y-4">
-                    <AlertTriangle className="w-10 h-10 text-[#B45309] mx-auto" />
-                    <h2 className="font-serif italic font-bold text-xl">Page Not Found</h2>
-                    <p className="text-xs text-slate-600">The requested route does not exist.</p>
+                  <div className="p-8 bg-white border border-[#E2DFD7] rounded-2xl max-w-md mx-auto my-12 text-center space-y-4 shadow-xs">
+                    <AlertTriangle className="w-10 h-10 text-[#C49A36] mx-auto" />
+                    <h2 className="font-bold text-xl text-[#0B1426]">Page not found</h2>
+                    <p className="text-xs text-[#64748B]">The requested workspace route does not exist.</p>
                     <button
                       onClick={() => navigate('/app/today')}
-                      className="px-4 py-2 bg-[#1A1A1A] text-amber-400 font-bold uppercase text-xs border border-[#1A1A1A]"
+                      className="px-4 py-2 bg-[#0B1426] hover:bg-[#16233D] text-white font-semibold rounded-lg text-xs cursor-pointer"
                     >
-                      Return to Today Overview
+                      Return to Today
                     </button>
                   </div>
                 }
@@ -1105,13 +1217,18 @@ export default function App() {
           </div>
 
           {/* Footer */}
-          <footer className="bg-[#1A1A1A] border-t border-slate-800 py-4 text-center text-xs text-slate-400 mt-auto">
-            <div className="max-w-[1700px] mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
-              <span className="font-serif italic text-white font-bold">Advocate360 AI LegalOS</span>
-              <span className="text-[10px] uppercase font-mono">
-                Confidential & Isolated Chamber Workspace
+          <footer className="bg-[#0B1426] border-t border-white/10 py-3.5 text-center text-xs text-slate-300 mt-auto">
+            <div className="max-w-[1600px] mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-white">Advocate360</span>
+                <span className="text-[#C49A36] text-[10px] font-semibold uppercase tracking-wider">
+                  UNIKORN360 Business Intelligence
+                </span>
+              </div>
+              <span className="text-[11px] text-slate-400">
+                Confidential chamber workspace
               </span>
-              <span className="text-[10px]">© {new Date().getFullYear()} Advocate360</span>
+              <span className="text-[11px] text-slate-400">© {new Date().getFullYear()} UNIKORN360</span>
             </div>
           </footer>
         </div>
@@ -1179,6 +1296,14 @@ export default function App() {
         isOpen={isNewCaseModalOpen}
         onClose={() => setIsNewCaseModalOpen(false)}
         onAddCase={handleAddNewCase}
+      />
+
+      <ScheduleHearingModal
+        isOpen={isScheduleHearingOpen}
+        onClose={() => setIsScheduleHearingOpen(false)}
+        cases={cases}
+        defaultMatterId={scheduleHearingMatterId || selectedCaseId}
+        onScheduleHearing={handleCreateHearing}
       />
 
       <DigitalSignatureDrawer

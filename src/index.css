@@ -1,37 +1,64 @@
 @import "tailwindcss";
 
+:root {
+  --u360-navy: #0B1426;
+  --u360-navy-hover: #14223D;
+  --u360-gold: #C49A36;
+  --u360-gold-muted: #F7F1E1;
+  --u360-canvas: #F6F5F1;
+  --u360-surface: #FFFFFF;
+  --u360-surface-subtle: #FAF9F6;
+  --u360-border: #E2DFD7;
+  --u360-ink: #0B1426;
+  --u360-ink-muted: #4B5565;
+  --font-u360-sans: "Inter", "Noto Sans Tamil", "Latha", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
 @theme {
-  --font-serif: "Newsreader", Georgia, Cambria, serif;
-  --font-sans: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, sans-serif;
-  
-  --color-paper: #FDFCFB;
-  --color-paper-muted: #F5F2EF;
-  --color-paper-subtle: #F9F7F5;
-  --color-ink: #1A1A1A;
-  --color-ink-muted: #555555;
-  --color-editorial-amber: #B45309;
+  --font-sans: "Inter", "Noto Sans Tamil", "Latha", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-serif: "Inter", "Noto Sans Tamil", "Latha", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+
+  --color-navy: #0B1426;
+  --color-gold: #C49A36;
+  --color-paper: #F6F5F1;
+  --color-paper-muted: #EFECE4;
+  --color-paper-subtle: #FAF9F6;
+  --color-ink: #0B1426;
+  --color-ink-muted: #4B5565;
+  --color-editorial-amber: #C49A36;
 }
 
 body {
-  background-color: #FDFCFB;
-  color: #1A1A1A;
-  font-family: var(--font-sans);
+  background-color: var(--u360-canvas);
+  color: var(--u360-ink);
+  font-family: var(--font-u360-sans);
 }
 
-/* Custom Editorial Scrollbar */
+/* Central Reusable Surface & Badge Helpers */
+.u360-card {
+  background-color: var(--u360-surface);
+  border: 1px solid var(--u360-border);
+  border-radius: 0.75rem;
+}
+
+.u360-table-numeric {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Custom UNIKORN360 Scrollbar */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #F5F2EF;
+  background: #EFECE4;
 }
 ::-webkit-scrollbar-thumb {
-  background: #1A1A1A;
-  border-radius: 0px;
+  background: #0B1426;
+  border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #B45309;
+  background: #C49A36;
 }
 
 /* No-scrollbar helper */
@@ -42,3 +69,4 @@ body {
   -ms-overflow-style: none;
   scrollbar-width: none;
 }
+

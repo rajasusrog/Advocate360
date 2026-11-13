@@ -402,40 +402,41 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   };
 
   return (
-    <div className="p-8 max-w-7xl mx-auto space-y-6">
+    <div className="space-y-6 text-[#0B1426]">
       {/* Staff Header */}
-      <div className="bg-slate-900 text-white rounded-2xl p-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-lg border border-slate-800">
-        <div className="flex items-center gap-4">
-          <div className="w-12 h-12 rounded-2xl bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400">
-            <Shield className="w-6 h-6" />
+      <div className="bg-[#0B1426] text-white rounded-2xl p-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-xs border border-[#16233D]">
+        <div className="flex items-center gap-4 min-w-0">
+          <div className="w-11 h-11 rounded-xl bg-white/10 border border-white/15 flex items-center justify-center text-[#C49A36] shrink-0">
+            <Shield className="w-5 h-5" />
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-xl font-bold tracking-tight">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h1 className="text-xl font-bold tracking-tight text-white">
                 Staff Client Directory &amp; Portal Access Control
               </h1>
-              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+              <span className="px-2.5 py-0.5 rounded-md text-[11px] font-semibold uppercase tracking-wider bg-[#C49A36]/20 text-[#C49A36] border border-[#C49A36]/40">
                 Chamber Staff View
               </span>
             </div>
-            <p className="text-xs text-slate-400 mt-1">
-              Manage your chamber&apos;s internal client directory and issue Matter-Scoped, SHA-256 hashed invitations for the separate Restricted Client Portal (<code>/portal/redeem</code>).
+            <p className="text-xs text-slate-300 mt-1 leading-relaxed">
+              Manage your chamber&apos;s internal client directory and issue matter-scoped invitations for the separate Restricted Client Portal (<code className="text-[#C49A36]">/portal/redeem</code>).
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-3 w-full md:w-auto">
+        <div className="flex items-center gap-3 w-full md:w-auto shrink-0">
           {canManageInvitations ? (
             <button
+              type="button"
               onClick={() => handleOpenInviteModal()}
               disabled={cases.length === 0}
-              className="flex items-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition-all shadow-sm"
+              className="flex items-center gap-2 px-4 py-2.5 bg-[#C49A36] hover:bg-[#D4AA46] disabled:opacity-50 text-[#0B1426] rounded-lg text-xs font-semibold transition-colors cursor-pointer"
             >
               <UserPlus className="w-4 h-4" />
-              Issue Client Portal Invitation
+              <span>Invite client</span>
             </button>
           ) : (
-            <span className="px-3 py-1.5 bg-slate-800 text-slate-400 rounded-xl text-xs font-medium border border-slate-700">
+            <span className="px-3 py-1.5 bg-white/10 text-slate-200 rounded-lg text-xs font-medium border border-white/15">
               Only Owner / Senior Advocate / Associate can issue invitations
             </span>
           )}
@@ -445,36 +446,31 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       {/* Action / Delivery Honesty Banner */}
       {actionBanner && (
         <div
-          className={`rounded-2xl p-5 border flex flex-col md:flex-row items-start md:items-center justify-between gap-4 ${
+          className={`rounded-xl p-5 border flex flex-col md:flex-row items-start md:items-center justify-between gap-4 ${
             actionBanner.deliveryStatus === 'email_not_sent'
-              ? 'bg-amber-50 border-amber-200 text-amber-900'
-              : 'bg-slate-50 border-slate-200 text-slate-800'
+              ? 'bg-[#FFFBEB] border-[#FDE68A] text-[#0B1426]'
+              : 'bg-white border-[#E2DFD7] text-[#0B1426]'
           }`}
         >
-          <div className="flex items-start gap-3">
+          <div className="flex items-start gap-3 min-w-0">
             <AlertTriangle
               className={`w-5 h-5 shrink-0 mt-0.5 ${
                 actionBanner.deliveryStatus === 'email_not_sent'
-                  ? 'text-amber-600'
-                  : 'text-indigo-600'
+                  ? 'text-[#B45309]'
+                  : 'text-[#C49A36]'
               }`}
             />
-            <div className="space-y-1">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-bold uppercase tracking-wider">
+            <div className="space-y-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs font-semibold uppercase tracking-wider">
                   {actionBanner.deliveryStatus === 'email_not_sent'
                     ? 'Email not sent'
                     : 'Portal Access Update'}
                 </span>
-                {actionBanner.deliveryStatus === 'email_not_sent' && (
-                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-200/70 text-amber-900">
-                    Email not sent
-                  </span>
-                )}
               </div>
-              <p className="text-xs leading-relaxed">{actionBanner.message}</p>
+              <p className="text-xs text-[#475569] leading-relaxed">{actionBanner.message}</p>
               {actionBanner.inviteUrl && (
-                <p className="text-[11px] font-mono text-slate-600 break-all pt-1">
+                <p className="text-[11px] font-mono text-[#475569] break-all pt-1">
                   {actionBanner.inviteUrl}
                 </p>
               )}
@@ -484,25 +480,27 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
           <div className="flex items-center gap-2 shrink-0">
             {actionBanner.inviteUrl && (
               <button
+                type="button"
                 onClick={() => handleCopyInviteLink('banner-link', actionBanner.inviteUrl)}
-                className="flex items-center gap-1.5 px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition-colors"
+                className="flex items-center gap-1.5 px-3.5 py-2 bg-[#0B1426] hover:bg-[#16233D] text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer"
               >
                 {copiedInviteId === 'banner-link' ? (
                   <>
-                    <Check className="w-3.5 h-3.5 text-emerald-400" />
-                    Link Copied (Email not sent)
+                    <Check className="w-3.5 h-3.5 text-[#C49A36]" />
+                    <span>Link Copied (Email not sent)</span>
                   </>
                 ) : (
                   <>
-                    <Copy className="w-3.5 h-3.5" />
-                    Copy Link
+                    <Copy className="w-3.5 h-3.5 text-[#C49A36]" />
+                    <span>Copy Link</span>
                   </>
                 )}
               </button>
             )}
             <button
+              type="button"
               onClick={() => setActionBanner(null)}
-              className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg"
+              className="p-1.5 text-[#64748B] hover:text-[#0B1426] rounded-lg cursor-pointer"
             >
               <X className="w-4 h-4" />
             </button>
@@ -511,22 +509,26 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       )}
 
       {inviteError && (
-        <div className="rounded-xl bg-red-50 border border-red-200 p-4 text-xs font-semibold text-red-700 flex items-center justify-between">
+        <div className="rounded-xl bg-[#FEF2F2] border border-[#FECACA] p-4 text-xs font-medium text-[#B91C1C] flex items-center justify-between">
           <span>{inviteError}</span>
-          <button onClick={() => setInviteError(null)} className="text-red-500 hover:text-red-700">
+          <button
+            type="button"
+            onClick={() => setInviteError(null)}
+            className="text-[#B91C1C] hover:text-[#7F1D1D] cursor-pointer"
+          >
             <X className="w-4 h-4" />
           </button>
         </div>
       )}
 
       {/* Section 1: Staff Internal Client Directory */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="p-6 border-b border-slate-100 flex items-center justify-between">
+      <div className="bg-white rounded-xl border border-[#E2DFD7] shadow-2xs overflow-hidden">
+        <div className="p-5 sm:p-6 border-b border-[#E2DFD7] flex items-center justify-between">
           <div>
-            <h2 className="text-base font-bold text-slate-900">
+            <h2 className="text-base font-bold text-[#0B1426]">
               Chamber Staff Client Directory ({Math.max(cases.length, dbClients.length)})
             </h2>
-            <p className="text-xs text-slate-500 mt-0.5">
+            <p className="text-xs text-[#64748B] mt-0.5">
               Internal staff directory of clients across active workspace matters. Restricted portal users cannot view this directory.
             </p>
           </div>
@@ -534,19 +536,19 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
-              <tr className="border-b border-slate-200 text-[11px] font-bold text-slate-400 uppercase tracking-wider bg-slate-50/50">
-                <th className="py-3.5 px-6">Client Name</th>
-                <th className="py-3.5 px-6">Matter / Case Title</th>
-                <th className="py-3.5 px-6">Court &amp; Stage</th>
-                <th className="py-3.5 px-6">Next Hearing</th>
-                <th className="py-3.5 px-6 text-right">Restricted Portal Access</th>
+              <tr className="border-b border-[#E2DFD7] text-[11px] font-semibold text-[#475569] uppercase tracking-wider bg-[#F6F5F1]">
+                <th className="py-3 px-6">Client Name</th>
+                <th className="py-3 px-6">Matter / Case Title</th>
+                <th className="py-3 px-6">Court &amp; Stage</th>
+                <th className="py-3 px-6">Next Hearing</th>
+                <th className="py-3 px-6 text-right">Restricted Portal Access</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100 text-sm">
+            <tbody className="divide-y divide-[#EFECE4] text-sm">
               {cases.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="py-8 text-center text-xs text-slate-400">
-                    No matters registered in this workspace yet. Create a matter first before issuing a client portal invitation.
+                  <td colSpan={5} className="py-8 text-center text-xs text-[#64748B]">
+                    No matters registered in this workspace yet. Add a matter first before issuing a client portal invitation.
                   </td>
                 </tr>
               ) : (
@@ -557,49 +559,50 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                       (inv.status === 'Active' || inv.status === 'Redeemed')
                   );
                   return (
-                    <tr key={c.id} className="hover:bg-slate-50 transition-colors">
+                    <tr key={c.id} className="hover:bg-[#F6F5F1]/60 transition-colors">
                       <td className="py-4 px-6">
-                        <div className="font-bold text-slate-900">{c.clientName}</div>
-                        <div className="text-xs text-slate-500">
+                        <div className="font-semibold text-[#0B1426]">{c.clientName}</div>
+                        <div className="text-xs text-[#64748B]">
                           {c.clientEmail || c.clientPhone || 'No email recorded on matter'}
                         </div>
                       </td>
                       <td className="py-4 px-6">
-                        <div className="font-semibold text-slate-800">{c.title}</div>
-                        <div className="text-xs font-mono text-slate-500">
+                        <div className="font-medium text-[#0B1426]">{c.title}</div>
+                        <div className="text-xs font-mono text-[#64748B]">
                           {c.caseNumber || 'Unregistered'}
                         </div>
                       </td>
                       <td className="py-4 px-6">
-                        <div className="text-xs font-medium text-slate-700">{c.courtName}</div>
-                        <span className="inline-block mt-1 px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 font-bold text-[10px]">
+                        <div className="text-xs font-medium text-[#475569]">{c.courtName}</div>
+                        <span className="inline-block mt-1 px-2 py-0.5 rounded bg-[#0B1426]/5 text-[#0B1426] border border-[#0B1426]/15 font-semibold text-[10px]">
                           {c.stage}
                         </span>
                       </td>
-                      <td className="py-4 px-6 font-mono text-xs text-slate-600">
-                        {c.nextHearingDate || 'TBA'}
+                      <td className="py-4 px-6 u360-table-numeric text-xs text-[#475569]">
+                        {c.nextHearingDate || 'Not scheduled'}
                       </td>
                       <td className="py-4 px-6 text-right">
                         <div className="flex items-center justify-end gap-2">
                           {activeInv && (
                             <span
-                              className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase ${
+                              className={`px-2.5 py-0.5 rounded-md text-[11px] font-semibold ${
                                 activeInv.status === 'Redeemed'
-                                  ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                  : 'bg-amber-50 text-amber-700 border border-amber-200'
+                                  ? 'bg-[#DCFCE7] text-[#15803D] border border-[#BBF7D0]'
+                                  : 'bg-[#FFFBEB] text-[#B45309] border border-[#FDE68A]'
                               }`}
                             >
                               {activeInv.status === 'Redeemed'
-                                ? 'Grant Active (Redeemed)'
+                                ? 'Grant Active'
                                 : 'Invite Pending (Email not sent)'}
                             </span>
                           )}
                           {canManageInvitations && (
                             <button
+                              type="button"
                               onClick={() => handleOpenInviteModal(c)}
-                              className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold transition-colors"
+                              className="px-3 py-1.5 bg-[#0B1426] hover:bg-[#16233D] text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer"
                             >
-                              Invite Client
+                              Invite client
                             </button>
                           )}
                         </div>
@@ -614,104 +617,105 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       </div>
 
       {/* Section 2: Persisted Client Invitations & Active Grants Table */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="p-6 border-b border-slate-100 flex items-center justify-between">
+      <div className="bg-white rounded-xl border border-[#E2DFD7] shadow-2xs overflow-hidden">
+        <div className="p-5 sm:p-6 border-b border-[#E2DFD7] flex items-center justify-between gap-3">
           <div>
             <div className="flex items-center gap-2">
-              <KeyRound className="w-5 h-5 text-indigo-600" />
-              <h2 className="text-base font-bold text-slate-900">
+              <KeyRound className="w-5 h-5 text-[#C49A36]" />
+              <h2 className="text-base font-bold text-[#0B1426]">
                 Persisted Client Portal Invitations &amp; Grants ({invitations.length})
               </h2>
             </div>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Only SHA-256 token hashes are stored in PostgreSQL. Revoking an invitation immediately invalidates both the link and any redeemed client access grant.
+            <p className="text-xs text-[#64748B] mt-0.5">
+              Only SHA-256 token hashes are stored in PostgreSQL. Revoking an invitation immediately invalidates both the link and any active access grant.
             </p>
           </div>
           <button
+            type="button"
             onClick={loadWorkspaceInvitations}
             disabled={loadingInvitations}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-[#F6F5F1] hover:bg-[#EFECE4] border border-[#E2DFD7] text-[#0B1426] rounded-lg text-xs font-semibold transition-colors cursor-pointer"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loadingInvitations ? 'animate-spin' : ''}`} />
-            Refresh
+            <span>Refresh</span>
           </button>
         </div>
 
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
-              <tr className="border-b border-slate-200 text-[11px] font-bold text-slate-400 uppercase tracking-wider bg-slate-50/50">
-                <th className="py-3.5 px-6">Intended Recipient</th>
-                <th className="py-3.5 px-6">Matter Scope</th>
-                <th className="py-3.5 px-6">Permitted Data Scopes</th>
-                <th className="py-3.5 px-6">Expiry &amp; Delivery</th>
-                <th className="py-3.5 px-6">Grant Status</th>
-                <th className="py-3.5 px-6 text-right">Actions</th>
+              <tr className="border-b border-[#E2DFD7] text-[11px] font-semibold text-[#475569] uppercase tracking-wider bg-[#F6F5F1]">
+                <th className="py-3 px-6">Intended Recipient</th>
+                <th className="py-3 px-6">Matter Scope</th>
+                <th className="py-3 px-6">Permitted Scopes</th>
+                <th className="py-3 px-6">Expiry &amp; Delivery</th>
+                <th className="py-3 px-6">Status</th>
+                <th className="py-3 px-6 text-right">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100 text-sm">
+            <tbody className="divide-y divide-[#EFECE4] text-sm">
               {invitations.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="py-8 text-center text-xs text-slate-400">
-                    No client invitations have been issued in this workspace.
+                  <td colSpan={6} className="py-8 text-center text-xs text-[#64748B]">
+                    No client invitations have been issued in this workspace yet.
                   </td>
                 </tr>
               ) : (
                 invitations.map((inv) => (
-                  <tr key={inv.id} className="hover:bg-slate-50 transition-colors">
+                  <tr key={inv.id} className="hover:bg-[#F6F5F1]/60 transition-colors">
                     <td className="py-4 px-6">
-                      <div className="font-bold text-slate-900">{inv.clientName}</div>
-                      <div className="text-xs text-slate-500 flex items-center gap-1.5 mt-0.5">
-                        <Mail className="w-3 h-3 text-slate-400" />
-                        {inv.clientEmail}
+                      <div className="font-semibold text-[#0B1426]">{inv.clientName}</div>
+                      <div className="text-xs text-[#64748B] flex items-center gap-1.5 mt-0.5">
+                        <Mail className="w-3 h-3" />
+                        <span>{inv.clientEmail}</span>
                       </div>
                     </td>
                     <td className="py-4 px-6">
-                      <div className="font-semibold text-slate-800 text-xs">{inv.matterTitle}</div>
-                      <div className="text-[11px] font-mono text-slate-400 mt-0.5">
-                        Matter ID: {inv.matterId.slice(0, 8)}...
+                      <div className="font-medium text-[#0B1426] text-xs">{inv.matterTitle}</div>
+                      <div className="text-[11px] font-mono text-[#64748B] mt-0.5">
+                        {inv.matterId.slice(0, 8)}...
                       </div>
                     </td>
                     <td className="py-4 px-6">
                       <div className="flex flex-wrap gap-1">
                         {inv.scopes.viewHearings && (
-                          <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px] font-semibold">
+                          <span className="px-2 py-0.5 rounded bg-[#F6F5F1] border border-[#E2DFD7] text-[#0B1426] text-[10px] font-medium">
                             Hearings
                           </span>
                         )}
                         {inv.scopes.viewFilings && (
-                          <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px] font-semibold">
+                          <span className="px-2 py-0.5 rounded bg-[#F6F5F1] border border-[#E2DFD7] text-[#0B1426] text-[10px] font-medium">
                             Filings
                           </span>
                         )}
                         {inv.scopes.viewBilling && (
-                          <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px] font-semibold">
+                          <span className="px-2 py-0.5 rounded bg-[#F6F5F1] border border-[#E2DFD7] text-[#0B1426] text-[10px] font-medium">
                             Billing
                           </span>
                         )}
                         {inv.scopes.uploadDocs && (
-                          <span className="px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 text-[10px] font-semibold">
+                          <span className="px-2 py-0.5 rounded bg-[#C49A36]/15 border border-[#C49A36]/40 text-[#0B1426] text-[10px] font-medium">
                             Upload Docs
                           </span>
                         )}
                         {inv.scopes.chatAi && (
-                          <span className="px-2 py-0.5 rounded bg-purple-50 text-purple-700 text-[10px] font-semibold">
+                          <span className="px-2 py-0.5 rounded bg-[#0B1426]/5 border border-[#0B1426]/15 text-[#0B1426] text-[10px] font-medium">
                             Status Q&amp;A
                           </span>
                         )}
                       </div>
                     </td>
                     <td className="py-4 px-6">
-                      <div className="text-xs font-mono text-slate-600">
+                      <div className="text-xs u360-table-numeric text-[#475569]">
                         Expires: {String(inv.expiresAt).split('T')[0]}
                       </div>
                       <div className="mt-1">
                         {inv.deliveryStatus === 'email_sent' ? (
-                          <span className="text-[10px] font-bold text-emerald-700">
+                          <span className="text-[11px] font-semibold text-[#15803D]">
                             Email sent
                           </span>
                         ) : (
-                          <span className="px-2 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200 text-[10px] font-bold">
+                          <span className="px-2 py-0.5 rounded bg-[#FFFBEB] text-[#B45309] border border-[#FDE68A] text-[10px] font-semibold">
                             Email not sent
                           </span>
                         )}
@@ -719,20 +723,20 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                     </td>
                     <td className="py-4 px-6">
                       <span
-                        className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                        className={`px-2.5 py-0.5 rounded-md text-[11px] font-semibold ${
                           inv.status === 'Redeemed'
-                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                            ? 'bg-[#DCFCE7] text-[#15803D] border border-[#BBF7D0]'
                             : inv.status === 'Active'
-                            ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
-                            : inv.status === 'Expired'
-                            ? 'bg-amber-50 text-amber-700 border border-amber-200'
-                            : 'bg-red-50 text-red-700 border border-red-200'
+                              ? 'bg-[#0B1426]/5 text-[#0B1426] border border-[#0B1426]/20'
+                              : inv.status === 'Expired'
+                                ? 'bg-[#FFFBEB] text-[#B45309] border border-[#FDE68A]'
+                                : 'bg-[#FEF2F2] text-[#B91C1C] border border-[#FECACA]'
                         }`}
                       >
                         {inv.status}
                       </span>
                       {inv.redeemedAt && (
-                        <div className="text-[10px] text-slate-400 mt-1">
+                        <div className="text-[11px] text-[#64748B] mt-1">
                           Redeemed {String(inv.redeemedAt).split('T')[0]}
                         </div>
                       )}
@@ -741,31 +745,32 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                       <div className="flex items-center justify-end gap-2">
                         {inv.transientInviteUrl && inv.status === 'Active' && (
                           <button
+                            type="button"
                             onClick={() => handleCopyInviteLink(inv.id, inv.transientInviteUrl)}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold transition-colors"
-                            title="Copy one-time redemption link (Email not sent)"
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-[#F6F5F1] hover:bg-[#EFECE4] border border-[#E2DFD7] text-[#0B1426] rounded-lg text-xs font-semibold transition-colors cursor-pointer"
                           >
                             {copiedInviteId === inv.id ? (
                               <>
-                                <Check className="w-3.5 h-3.5 text-emerald-600" />
-                                Link Copied (Email not sent)
+                                <Check className="w-3.5 h-3.5 text-[#15803D]" />
+                                <span>Link Copied (Email not sent)</span>
                               </>
                             ) : (
                               <>
-                                <Copy className="w-3.5 h-3.5" />
-                                Copy Link
+                                <Copy className="w-3.5 h-3.5 text-[#C49A36]" />
+                                <span>Copy Link</span>
                               </>
                             )}
                           </button>
                         )}
                         {canManageInvitations && inv.status !== 'Revoked' && (
                           <button
+                            type="button"
                             onClick={() => handleRevokeInvitation(inv.id)}
                             disabled={revokingInviteId === inv.id}
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 rounded-lg text-xs font-bold transition-colors disabled:opacity-50"
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-[#FEF2F2] hover:bg-[#FEE2E2] text-[#B91C1C] border border-[#FECACA] rounded-lg text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer"
                           >
                             <Ban className="w-3.5 h-3.5" />
-                            {inv.status === 'Redeemed' ? 'Revoke Grant' : 'Revoke Invite'}
+                            <span>{inv.status === 'Redeemed' ? 'Revoke Grant' : 'Revoke Invite'}</span>
                           </button>
                         )}
                       </div>
@@ -780,25 +785,24 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
 
       {/* Create Client Invitation Modal */}
       {isInviteModalOpen && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 animate-in zoom-in-95 duration-200">
-            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+        <div className="fixed inset-0 bg-[#0B1426]/65 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-[#E2DFD7]">
+            <div className="flex items-center justify-between pb-4 border-b border-[#E2DFD7]">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
-                  <KeyRound className="w-5 h-5" />
+                <div className="w-9 h-9 rounded-lg bg-[#0B1426] text-[#C49A36] flex items-center justify-center">
+                  <KeyRound className="w-4 h-4" />
                 </div>
                 <div>
-                  <h3 className="text-lg font-bold text-slate-900">
-                    Issue Client Portal Invitation
-                  </h3>
-                  <p className="text-xs text-slate-500">
+                  <h3 className="text-base font-bold text-[#0B1426]">Invite client to portal</h3>
+                  <p className="text-xs text-[#64748B]">
                     Generates a 256-bit cryptographic token and stores only its SHA-256 hash.
                   </p>
                 </div>
               </div>
               <button
+                type="button"
                 onClick={() => setIsInviteModalOpen(false)}
-                className="p-2 text-slate-400 hover:text-slate-600 rounded-xl"
+                className="p-1.5 text-[#64748B] hover:text-[#0B1426] rounded-lg cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -806,8 +810,8 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
 
             <form onSubmit={handleCreateInvitation} className="mt-5 space-y-4">
               <div>
-                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                  Select Workspace Matter
+                <label className="block text-xs font-semibold text-[#0B1426] mb-1">
+                  Matter
                 </label>
                 <select
                   value={inviteCaseId}
@@ -819,7 +823,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                       if (found.clientEmail) setInviteClientEmail(found.clientEmail);
                     }
                   }}
-                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium text-slate-800 focus:outline-none focus:border-indigo-500"
+                  className="w-full px-3 py-2 bg-white border border-[#CBD5E1] rounded-lg text-sm text-[#0B1426] focus:outline-none focus:border-[#0B1426]"
                 >
                   {cases.map((c) => (
                     <option key={c.id} value={c.id}>
@@ -831,54 +835,54 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                    Client Full Name
+                  <label className="block text-xs font-semibold text-[#0B1426] mb-1">
+                    Client full name
                   </label>
                   <input
                     type="text"
                     required
                     value={inviteClientName}
                     onChange={(e) => setInviteClientName(e.target.value)}
-                    placeholder="e.g., Ramesh Sharma"
-                    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-indigo-500"
+                    placeholder="Client full name"
+                    className="w-full px-3 py-2 bg-white border border-[#CBD5E1] rounded-lg text-sm focus:outline-none focus:border-[#0B1426]"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                    Verified Recipient Email
+                  <label className="block text-xs font-semibold text-[#0B1426] mb-1">
+                    Verified recipient email
                   </label>
                   <input
                     type="email"
                     required
                     value={inviteClientEmail}
                     onChange={(e) => setInviteClientEmail(e.target.value)}
-                    placeholder="client@company.in"
-                    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-indigo-500"
+                    placeholder="client@example.com"
+                    className="w-full px-3 py-2 bg-white border border-[#CBD5E1] rounded-lg text-sm focus:outline-none focus:border-[#0B1426]"
                   />
                 </div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                    Phone Number (Optional)
+                  <label className="block text-xs font-semibold text-[#0B1426] mb-1">
+                    Phone number (optional)
                   </label>
                   <input
                     type="text"
                     value={inviteClientPhone}
                     onChange={(e) => setInviteClientPhone(e.target.value)}
-                    placeholder="+91 98201 11223"
-                    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-indigo-500"
+                    placeholder="+91 98400 00000"
+                    className="w-full px-3 py-2 bg-white border border-[#CBD5E1] rounded-lg text-sm focus:outline-none focus:border-[#0B1426]"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                    Invitation &amp; Grant Expiry
+                  <label className="block text-xs font-semibold text-[#0B1426] mb-1">
+                    Invitation &amp; grant expiry
                   </label>
                   <select
                     value={inviteExpiryDays}
                     onChange={(e) => setInviteExpiryDays(Number(e.target.value))}
-                    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium text-slate-800 focus:outline-none focus:border-indigo-500"
+                    className="w-full px-3 py-2 bg-white border border-[#CBD5E1] rounded-lg text-sm text-[#0B1426] focus:outline-none focus:border-[#0B1426]"
                   >
                     <option value={3}>3 Days</option>
                     <option value={7}>7 Days</option>
@@ -889,20 +893,20 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
-                  Explicitly Permitted Client Scopes (Internal Findings &amp; Private Drafts Always Excluded)
+                <label className="block text-xs font-semibold text-[#0B1426] mb-2">
+                  Permitted client scopes (internal findings and private drafts remain excluded)
                 </label>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 bg-slate-50 p-3.5 rounded-2xl border border-slate-200">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 bg-[#F6F5F1] p-3.5 rounded-xl border border-[#E2DFD7]">
                   {[
-                    { key: 'viewHearings', label: 'View Hearing Dates & Chronology' },
-                    { key: 'viewFilings', label: 'View Shared Filings & Orders' },
-                    { key: 'viewBilling', label: 'View Matter Invoices & Billing' },
-                    { key: 'uploadDocs', label: 'Upload Supporting Documents' },
-                    { key: 'chatAi', label: 'Use Client Matter Status Q&A' },
+                    { key: 'viewHearings', label: 'View hearing dates & schedule' },
+                    { key: 'viewFilings', label: 'View shared filings & orders' },
+                    { key: 'viewBilling', label: 'View matter invoices' },
+                    { key: 'uploadDocs', label: 'Upload supporting documents' },
+                    { key: 'chatAi', label: 'Use client status Q&A' },
                   ].map((perm) => (
                     <label
                       key={perm.key}
-                      className="flex items-center gap-2.5 text-xs font-medium text-slate-700 cursor-pointer"
+                      className="flex items-center gap-2 text-xs font-medium text-[#0B1426] cursor-pointer"
                     >
                       <input
                         type="checkbox"
@@ -913,29 +917,29 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                             [perm.key]: e.target.checked,
                           }))
                         }
-                        className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                        className="accent-[#0B1426]"
                       />
-                      {perm.label}
+                      <span>{perm.label}</span>
                     </label>
                   ))}
                 </div>
               </div>
 
-              <div className="pt-3 flex items-center justify-end gap-3 border-t border-slate-100">
+              <div className="pt-3 flex items-center justify-end gap-2 border-t border-[#E2DFD7]">
                 <button
                   type="button"
                   onClick={() => setIsInviteModalOpen(false)}
-                  className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-colors"
+                  className="px-4 py-2 bg-white hover:bg-[#F6F5F1] border border-[#E2DFD7] text-[#0B1426] rounded-lg text-xs font-semibold cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={isSubmittingInvite}
-                  className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition-colors shadow-sm"
+                  className="flex items-center gap-2 px-4 py-2 bg-[#0B1426] hover:bg-[#16233D] disabled:opacity-50 text-white rounded-lg text-xs font-semibold cursor-pointer"
                 >
-                  <KeyRound className="w-3.5 h-3.5" />
-                  {isSubmittingInvite ? 'Generating Secure Link...' : 'Create Invitation Link'}
+                  <KeyRound className="w-3.5 h-3.5 text-[#C49A36]" />
+                  <span>{isSubmittingInvite ? 'Creating link...' : 'Create invitation link'}</span>
                 </button>
               </div>
             </form>
@@ -1218,27 +1222,60 @@ export const RestrictedClientPortal: React.FC<RestrictedClientPortalProps> = ({
   // 1. Unauthenticated Recipient Sign-In Prompt
   if (!currentUserId || redemptionState === 'authenticating') {
     return (
-      <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6">
-        <div className="max-w-md w-full bg-slate-900 border border-slate-800 rounded-3xl p-8 shadow-2xl space-y-6">
-          <div className="w-12 h-12 rounded-2xl bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400">
-            <Shield className="w-6 h-6" />
+      <div className="min-h-screen bg-[#F6F5F1] text-[#0B1426] flex items-center justify-center p-6">
+        <div className="max-w-md w-full bg-white border border-[#E2DFD7] rounded-2xl p-6 sm:p-8 shadow-sm space-y-6">
+          <div className="flex items-center gap-3">
+            <div className="w-11 h-11 rounded-lg bg-[#F6F5F1] border border-[#E2DFD7] p-1 flex items-center justify-center shrink-0">
+              <img
+                src="/assets/aistudio/ChatGPT_Image_Oct_29__2026__07_20_38_PM_11dd3e23.png"
+                alt="UNIKORN360 emblem"
+                className="w-full h-full object-contain"
+              />
+            </div>
+            <div>
+              <span className="font-bold text-base text-[#0B1426] block leading-tight">
+                Advocate360
+              </span>
+              <span className="text-[11px] font-medium text-[#C49A36] block leading-tight">
+                Client Matter Portal
+              </span>
+            </div>
           </div>
-          <div>
-            <span className="px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-              Restricted Client Portal
+
+          <div className="space-y-2">
+            <span className="inline-block px-2.5 py-0.5 rounded-md text-[11px] font-semibold bg-[#0B1426]/5 text-[#0B1426] border border-[#0B1426]/15">
+              Verified Access Required
             </span>
-            <h1 className="text-2xl font-bold mt-3">Verify Recipient Identity</h1>
-            <p className="text-xs text-slate-400 mt-2 leading-relaxed">
-              Client portal invitations are bound to the intended recipient&apos;s verified email address. Please sign in with the email address that received this invitation. Your pending invitation will be preserved automatically across sign-in.
+            <h1 className="text-xl font-bold text-[#0B1426]">Sign in to view your matter</h1>
+            <p className="text-xs text-[#475569] leading-relaxed">
+              This portal is restricted to the invited recipient&apos;s verified email address. Your pending invitation link is preserved automatically during sign-in.
             </p>
           </div>
 
           <button
+            type="button"
             onClick={handleGoogleSignInForRedemption}
-            className="w-full py-3 px-4 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-colors shadow-lg"
+            className="w-full py-3 px-4 bg-[#0B1426] hover:bg-[#16233D] text-white rounded-lg text-sm font-semibold flex items-center justify-center gap-2.5 transition-colors cursor-pointer"
           >
-            <LogIn className="w-4 h-4" />
-            Sign In with Verified Email to Redeem
+            <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                fill="#4285F4"
+              />
+              <path
+                d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                fill="#34A853"
+              />
+              <path
+                d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                fill="#FBBC05"
+              />
+              <path
+                d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                fill="#EA4335"
+              />
+            </svg>
+            <span>Sign in with Google</span>
           </button>
         </div>
       </div>
@@ -1248,12 +1285,12 @@ export const RestrictedClientPortal: React.FC<RestrictedClientPortalProps> = ({
   // 2. Redeeming Loading State
   if (redemptionState === 'redeeming') {
     return (
-      <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6">
-        <div className="max-w-md w-full bg-slate-900 border border-slate-800 rounded-3xl p-8 text-center space-y-4">
-          <RefreshCw className="w-8 h-8 text-indigo-400 animate-spin mx-auto" />
-          <h2 className="text-lg font-bold">Verifying Invitation &amp; Granting Scoped Access...</h2>
-          <p className="text-xs text-slate-400">
-            Validating SHA-256 token digest, expiry, and recipient email match ({currentUserEmail}).
+      <div className="min-h-screen bg-[#F6F5F1] text-[#0B1426] flex items-center justify-center p-6">
+        <div className="max-w-md w-full bg-white border border-[#E2DFD7] rounded-2xl p-8 text-center space-y-4 shadow-sm">
+          <RefreshCw className="w-7 h-7 text-[#C49A36] animate-spin mx-auto" />
+          <h2 className="text-lg font-bold text-[#0B1426]">Verifying client invitation</h2>
+          <p className="text-xs text-[#64748B]">
+            Checking invitation expiry and recipient email ({currentUserEmail}).
           </p>
         </div>
       </div>
@@ -1263,30 +1300,38 @@ export const RestrictedClientPortal: React.FC<RestrictedClientPortalProps> = ({
   // 3. Denied / Wrong Recipient / Expired / Revoked State
   if (redemptionState === 'error' || !portalView) {
     return (
-      <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6">
-        <div className="max-w-lg w-full bg-slate-900 border border-red-500/30 rounded-3xl p-8 shadow-2xl space-y-5">
-          <div className="w-12 h-12 rounded-2xl bg-red-500/20 border border-red-500/30 flex items-center justify-center text-red-400">
-            <Lock className="w-6 h-6" />
+      <div className="min-h-screen bg-[#F6F5F1] text-[#0B1426] flex items-center justify-center p-6">
+        <div className="max-w-lg w-full bg-white border border-[#E2DFD7] rounded-2xl p-6 sm:p-8 shadow-sm space-y-5">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-[#FEF2F2] border border-[#FECACA] flex items-center justify-center text-[#B91C1C]">
+              <Lock className="w-5 h-5" />
+            </div>
+            <div>
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-[#B91C1C] block">
+                Client Portal Access Denied
+              </span>
+              <h1 className="text-lg font-bold text-[#0B1426]">
+                Unable to open client portal
+              </h1>
+            </div>
           </div>
-          <div>
-            <span className="px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-red-500/20 text-red-300 border border-red-500/30">
-              Client Portal Access Denied
-            </span>
-            <h1 className="text-xl font-bold mt-3">Unable to Access Restricted Matter Portal</h1>
-            <p className="text-xs text-red-300 bg-red-950/50 border border-red-800/50 rounded-xl p-3.5 mt-3 font-medium">
-              {redemptionError || 'Access denied: Invalid, expired, or revoked client portal grant.'}
-            </p>
-            <p className="text-xs text-slate-400 mt-3">
-              Signed in as: <strong className="text-slate-200">{currentUserEmail}</strong>
-            </p>
-          </div>
-          <div className="flex items-center gap-3 pt-2">
+
+          <p className="text-xs text-[#B91C1C] bg-[#FEF2F2] border border-[#FECACA] rounded-lg p-3.5 font-medium leading-relaxed">
+            {redemptionError || 'Access denied: Invalid, expired, or revoked client portal link.'}
+          </p>
+
+          <p className="text-xs text-[#64748B]">
+            Signed in as: <strong className="text-[#0B1426]">{currentUserEmail}</strong>
+          </p>
+
+          <div className="flex items-center gap-3 pt-1">
             <button
+              type="button"
               onClick={() => signOut()}
-              className="flex items-center gap-2 px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-bold transition-colors"
+              className="flex items-center gap-2 px-4 py-2.5 bg-[#0B1426] hover:bg-[#16233D] text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer"
             >
-              <LogOut className="w-4 h-4" />
-              Sign Out / Switch Account
+              <LogOut className="w-4 h-4 text-[#C49A36]" />
+              <span>Sign out / Switch account</span>
             </button>
           </div>
         </div>
@@ -1298,29 +1343,29 @@ export const RestrictedClientPortal: React.FC<RestrictedClientPortalProps> = ({
   const scopes = grant.scopes;
 
   return (
-    <div className="min-h-screen bg-slate-50 p-6 md:p-10">
-      <div className="max-w-5xl mx-auto space-y-6">
-        {/* Restricted Client Header */}
-        <div className="bg-slate-900 text-white rounded-3xl p-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-xl">
-          <div className="flex items-center gap-4">
-            <div className="w-12 h-12 rounded-2xl bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
-              <Shield className="w-6 h-6" />
+    <div className="min-h-screen bg-[#F6F5F1] text-[#0B1426]">
+      {/* Standalone Client Portal Top Bar (Zero Advocate Sidebar / Controls) */}
+      <header className="bg-white border-b border-[#E2DFD7]">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-9 h-9 rounded-lg bg-[#F6F5F1] border border-[#E2DFD7] p-1 flex items-center justify-center shrink-0">
+              <img
+                src="/assets/aistudio/ChatGPT_Image_Oct_29__2026__07_20_38_PM_11dd3e23.png"
+                alt="UNIKORN360 emblem"
+                className="w-full h-full object-contain"
+              />
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                  Verified Client Access Grant
-                </span>
-                <span className="text-xs text-slate-400">{grant.workspace_name}</span>
-              </div>
-              <h1 className="text-xl font-bold mt-1">{matter.title}</h1>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Recipient: {grant.client_email} • Case No: {matter.case_number || 'Pending'}
-              </p>
+            <div className="min-w-0">
+              <span className="font-bold text-sm sm:text-base text-[#0B1426] block leading-tight truncate">
+                Advocate360 Client Portal
+              </span>
+              <span className="text-[11px] text-[#64748B] block leading-tight truncate">
+                {grant.workspace_name}
+              </span>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 shrink-0">
             {activeGrants.length > 1 && (
               <select
                 value={matter.id}
@@ -1328,7 +1373,7 @@ export const RestrictedClientPortal: React.FC<RestrictedClientPortalProps> = ({
                   setSelectedMatterId(e.target.value);
                   loadMatterView(e.target.value);
                 }}
-                className="px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white font-semibold"
+                className="px-3 py-1.5 bg-[#F6F5F1] border border-[#E2DFD7] rounded-lg text-xs text-[#0B1426] font-medium"
               >
                 {activeGrants.map((g) => (
                   <option key={g.id} value={g.matterId}>
@@ -1338,65 +1383,88 @@ export const RestrictedClientPortal: React.FC<RestrictedClientPortalProps> = ({
               </select>
             )}
             <button
+              type="button"
               onClick={() => signOut()}
-              className="flex items-center gap-1.5 px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#F6F5F1] hover:bg-[#EFECE4] border border-[#E2DFD7] text-[#0B1426] rounded-lg text-xs font-semibold transition-colors cursor-pointer"
             >
               <LogOut className="w-3.5 h-3.5" />
-              Sign Out
+              <span>Sign out</span>
             </button>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-5xl mx-auto p-4 sm:p-6 md:p-8 space-y-6">
+        {/* Matter Identity Card */}
+        <div className="bg-[#0B1426] text-white rounded-2xl p-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-xs">
+          <div className="space-y-1.5 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="px-2.5 py-0.5 rounded-md text-[11px] font-semibold bg-[#C49A36]/20 text-[#C49A36] border border-[#C49A36]/40">
+                Verified Client Access
+              </span>
+              <span className="text-xs text-slate-300 truncate">{grant.client_email}</span>
+            </div>
+            <h1 className="text-xl font-bold text-white break-words">{matter.title}</h1>
+            <p className="text-xs text-slate-300">
+              Case Reference: {matter.case_number || 'Pending assignment'} • {matter.court_name}
+            </p>
           </div>
         </div>
 
         {/* Navigation Tabs Restricted by Granted Scopes */}
-        <div className="flex flex-wrap gap-2 bg-white p-1.5 rounded-2xl border border-slate-200 shadow-sm w-fit">
+        <div className="flex flex-wrap gap-1.5 bg-white p-1.5 rounded-xl border border-[#E2DFD7] shadow-2xs w-fit">
           <button
+            type="button"
             onClick={() => setActiveTab('overview')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
+            className={`px-3.5 py-2 rounded-lg text-xs font-semibold transition-colors flex items-center gap-2 cursor-pointer ${
               activeTab === 'overview'
-                ? 'bg-slate-900 text-white shadow-sm'
-                : 'text-slate-600 hover:bg-slate-100'
+                ? 'bg-[#0B1426] text-white'
+                : 'text-[#475569] hover:bg-[#F6F5F1] hover:text-[#0B1426]'
             }`}
           >
-            <Calendar className="w-4 h-4" />
-            Matter Status &amp; Hearings
+            <Calendar className="w-3.5 h-3.5 text-[#C49A36]" />
+            <span>Status &amp; Hearings</span>
           </button>
           {scopes.viewFilings && (
             <button
+              type="button"
               onClick={() => setActiveTab('filings')}
-              className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
+              className={`px-3.5 py-2 rounded-lg text-xs font-semibold transition-colors flex items-center gap-2 cursor-pointer ${
                 activeTab === 'filings'
-                  ? 'bg-slate-900 text-white shadow-sm'
-                  : 'text-slate-600 hover:bg-slate-100'
+                  ? 'bg-[#0B1426] text-white'
+                  : 'text-[#475569] hover:bg-[#F6F5F1] hover:text-[#0B1426]'
               }`}
             >
-              <FileText className="w-4 h-4" />
-              Shared Filings ({documents.length})
+              <FileText className="w-3.5 h-3.5 text-[#C49A36]" />
+              <span>Shared Filings ({documents.length})</span>
             </button>
           )}
           {scopes.viewBilling && (
             <button
+              type="button"
               onClick={() => setActiveTab('billing')}
-              className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
+              className={`px-3.5 py-2 rounded-lg text-xs font-semibold transition-colors flex items-center gap-2 cursor-pointer ${
                 activeTab === 'billing'
-                  ? 'bg-slate-900 text-white shadow-sm'
-                  : 'text-slate-600 hover:bg-slate-100'
+                  ? 'bg-[#0B1426] text-white'
+                  : 'text-[#475569] hover:bg-[#F6F5F1] hover:text-[#0B1426]'
               }`}
             >
-              <CreditCard className="w-4 h-4" />
-              Invoices &amp; Billing ({invoices.length})
+              <CreditCard className="w-3.5 h-3.5 text-[#C49A36]" />
+              <span>Billing ({invoices.length})</span>
             </button>
           )}
           {scopes.chatAi && (
             <button
+              type="button"
               onClick={() => setActiveTab('qa')}
-              className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
+              className={`px-3.5 py-2 rounded-lg text-xs font-semibold transition-colors flex items-center gap-2 cursor-pointer ${
                 activeTab === 'qa'
-                  ? 'bg-indigo-600 text-white shadow-sm'
-                  : 'text-slate-600 hover:bg-slate-100'
+                  ? 'bg-[#0B1426] text-white'
+                  : 'text-[#475569] hover:bg-[#F6F5F1] hover:text-[#0B1426]'
               }`}
             >
-              <Sparkles className="w-4 h-4" />
-              Status Q&amp;A
+              <Sparkles className="w-3.5 h-3.5 text-[#C49A36]" />
+              <span>Status Q&amp;A</span>
             </button>
           )}
         </div>
@@ -1405,48 +1473,42 @@ export const RestrictedClientPortal: React.FC<RestrictedClientPortalProps> = ({
         {activeTab === 'overview' && (
           <div className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                  Current Stage
-                </div>
-                <div className="text-lg font-bold text-slate-900 mt-1">
+              <div className="bg-white p-5 rounded-xl border border-[#E2DFD7] shadow-2xs">
+                <div className="text-[11px] font-medium text-[#64748B]">Current stage</div>
+                <div className="text-lg font-bold text-[#0B1426] mt-1">
                   {matter.stage || matter.status || 'Active'}
                 </div>
-                <div className="text-xs text-slate-500 mt-1">{matter.court_name}</div>
+                <div className="text-xs text-[#64748B] mt-1">{matter.court_name}</div>
               </div>
-              <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                  Next Listed Hearing
-                </div>
-                <div className="text-lg font-bold text-indigo-600 mt-1">
-                  { scopes.viewHearings
+              <div className="bg-white p-5 rounded-xl border border-[#E2DFD7] shadow-2xs">
+                <div className="text-[11px] font-medium text-[#64748B]">Next listed hearing</div>
+                <div className="text-lg font-bold text-[#0B1426] u360-table-numeric mt-1">
+                  {scopes.viewHearings
                     ? matter.next_hearing_date || 'Yet to be listed'
-                    : 'Scope not enabled' }
+                    : 'Not permitted'}
                 </div>
-                <div className="text-xs text-slate-500 mt-1">
+                <div className="text-xs text-[#64748B] mt-1">
                   {matter.judge_name || 'Presiding Bench'}
                 </div>
               </div>
-              <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                  Grant Expiry
-                </div>
-                <div className="text-lg font-bold text-slate-900 mt-1">
+              <div className="bg-white p-5 rounded-xl border border-[#E2DFD7] shadow-2xs">
+                <div className="text-[11px] font-medium text-[#64748B]">Grant expiry</div>
+                <div className="text-lg font-bold text-[#0B1426] u360-table-numeric mt-1">
                   {grant.expires_at ? String(grant.expires_at).split('T')[0] : 'Active'}
                 </div>
-                <div className="text-xs text-emerald-600 font-semibold mt-1">
-                  Internal findings &amp; private drafts hidden
+                <div className="text-xs text-[#15803D] font-medium mt-1">
+                  Internal notes &amp; private drafts hidden
                 </div>
               </div>
             </div>
 
             {scopes.viewHearings ? (
-              <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-4">
-                <h2 className="text-base font-bold text-slate-900">
-                  Hearing Schedule &amp; Matter Chronology
+              <div className="bg-white rounded-xl border border-[#E2DFD7] p-6 shadow-2xs space-y-4">
+                <h2 className="text-sm font-bold text-[#0B1426]">
+                  Hearing Schedule &amp; Chronology
                 </h2>
                 {hearings.length === 0 && timeline.length === 0 ? (
-                  <p className="text-xs text-slate-400">
+                  <p className="text-xs text-[#64748B]">
                     No hearings or chronology events recorded for this matter yet.
                   </p>
                 ) : (
@@ -1454,17 +1516,17 @@ export const RestrictedClientPortal: React.FC<RestrictedClientPortalProps> = ({
                     {hearings.map((h) => (
                       <div
                         key={h.id}
-                        className="p-4 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between"
+                        className="p-4 rounded-xl bg-[#F6F5F1] border border-[#E2DFD7] flex items-center justify-between gap-3"
                       >
                         <div>
-                          <div className="text-xs font-bold text-slate-900">
+                          <div className="text-xs font-semibold text-[#0B1426]">
                             {h.purpose || 'Court Hearing'}
                           </div>
                           {h.outcome_notes && (
-                            <div className="text-xs text-slate-600 mt-0.5">{h.outcome_notes}</div>
+                            <div className="text-xs text-[#475569] mt-0.5">{h.outcome_notes}</div>
                           )}
                         </div>
-                        <div className="text-xs font-mono font-bold text-indigo-600">
+                        <div className="text-xs font-semibold u360-table-numeric text-[#0B1426] shrink-0">
                           {h.hearing_date}
                         </div>
                       </div>
@@ -1472,22 +1534,24 @@ export const RestrictedClientPortal: React.FC<RestrictedClientPortalProps> = ({
                     {timeline.map((t) => (
                       <div
                         key={t.id}
-                        className="p-4 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between"
+                        className="p-4 rounded-xl bg-[#F6F5F1] border border-[#E2DFD7] flex items-center justify-between gap-3"
                       >
                         <div>
-                          <div className="text-xs font-bold text-slate-900">{t.title}</div>
+                          <div className="text-xs font-semibold text-[#0B1426]">{t.title}</div>
                           {t.description && (
-                            <div className="text-xs text-slate-600 mt-0.5">{t.description}</div>
+                            <div className="text-xs text-[#475569] mt-0.5">{t.description}</div>
                           )}
                         </div>
-                        <div className="text-xs font-mono text-slate-500">{t.event_date}</div>
+                        <div className="text-xs u360-table-numeric text-[#64748B] shrink-0">
+                          {t.event_date}
+                        </div>
                       </div>
                     ))}
                   </div>
                 )}
               </div>
             ) : (
-              <div className="bg-white rounded-2xl border border-slate-200 p-6 text-xs text-slate-500">
+              <div className="bg-white rounded-xl border border-[#E2DFD7] p-6 text-xs text-[#64748B]">
                 Hearing chronology is not enabled on your client access grant.
               </div>
             )}
@@ -1496,45 +1560,48 @@ export const RestrictedClientPortal: React.FC<RestrictedClientPortalProps> = ({
 
         {/* Tab 2: Shared Filings */}
         {activeTab === 'filings' && scopes.viewFilings && (
-          <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-4">
-            <div className="flex items-center justify-between">
+          <div className="bg-white rounded-xl border border-[#E2DFD7] p-6 shadow-2xs space-y-4">
+            <div className="flex items-center justify-between gap-3">
               <div>
-                <h2 className="text-base font-bold text-slate-900">
+                <h2 className="text-sm font-bold text-[#0B1426]">
                   Shared Matter Filings &amp; Orders
                 </h2>
-                <p className="text-xs text-slate-500">
-                  Private advocate drafts and internal fact findings are never accessible in the client portal.
+                <p className="text-xs text-[#64748B]">
+                  Internal chamber findings and private drafts are excluded from the client view.
                 </p>
               </div>
               {scopes.uploadDocs && (
                 <button
+                  type="button"
                   onClick={() => setIsUploadModalOpen(true)}
-                  className="flex items-center gap-1.5 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold"
+                  className="flex items-center gap-1.5 px-3.5 py-2 bg-[#0B1426] hover:bg-[#16233D] text-white rounded-lg text-xs font-semibold cursor-pointer"
                 >
-                  <Upload className="w-3.5 h-3.5" />
-                  Upload Document
+                  <Upload className="w-3.5 h-3.5 text-[#C49A36]" />
+                  <span>Upload document</span>
                 </button>
               )}
             </div>
 
             {documents.length === 0 ? (
-              <p className="text-xs text-slate-400 py-4">
+              <p className="text-xs text-[#64748B] py-4">
                 No filings have been shared on this matter yet.
               </p>
             ) : (
-              <div className="divide-y divide-slate-100">
+              <div className="divide-y divide-[#EFECE4]">
                 {documents.map((d) => (
-                  <div key={d.id} className="py-3.5 flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <FileText className="w-4 h-4 text-indigo-600" />
-                      <div>
-                        <div className="text-sm font-bold text-slate-900">{d.name}</div>
-                        <div className="text-xs text-slate-500">
+                  <div key={d.id} className="py-3.5 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <FileText className="w-4 h-4 text-[#C49A36] shrink-0" />
+                      <div className="min-w-0">
+                        <div className="text-sm font-semibold text-[#0B1426] truncate">
+                          {d.name}
+                        </div>
+                        <div className="text-xs text-[#64748B]">
                           {d.doc_type || 'Document'} • v{d.current_version || 1}
                         </div>
                       </div>
                     </div>
-                    <span className="text-xs font-mono text-slate-400">
+                    <span className="text-xs u360-table-numeric text-[#64748B] shrink-0">
                       {d.created_at ? String(d.created_at).split('T')[0] : ''}
                     </span>
                   </div>
@@ -1546,27 +1613,29 @@ export const RestrictedClientPortal: React.FC<RestrictedClientPortalProps> = ({
 
         {/* Tab 3: Billing */}
         {activeTab === 'billing' && scopes.viewBilling && (
-          <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-4">
-            <h2 className="text-base font-bold text-slate-900">Matter Invoices &amp; Statements</h2>
+          <div className="bg-white rounded-xl border border-[#E2DFD7] p-6 shadow-2xs space-y-4">
+            <h2 className="text-sm font-bold text-[#0B1426]">Matter Invoices &amp; Statements</h2>
             {invoices.length === 0 ? (
-              <p className="text-xs text-slate-400 py-4">
+              <p className="text-xs text-[#64748B] py-4">
                 No invoices have been issued for this matter yet.
               </p>
             ) : (
-              <div className="divide-y divide-slate-100">
+              <div className="divide-y divide-[#EFECE4]">
                 {invoices.map((inv) => (
-                  <div key={inv.id} className="py-4 flex items-center justify-between">
+                  <div key={inv.id} className="py-4 flex items-center justify-between gap-3">
                     <div>
-                      <div className="text-sm font-bold text-slate-900">{inv.invoice_number}</div>
-                      <div className="text-xs text-slate-500">
+                      <div className="text-sm font-semibold text-[#0B1426]">
+                        {inv.invoice_number}
+                      </div>
+                      <div className="text-xs text-[#64748B]">
                         Issued: {inv.issue_date} {inv.due_date ? `• Due: ${inv.due_date}` : ''}
                       </div>
                     </div>
                     <div className="text-right">
-                      <div className="text-sm font-bold text-slate-900">
+                      <div className="text-sm font-bold text-[#0B1426] u360-table-numeric">
                         ₹{Number(inv.total_amount || 0).toLocaleString('en-IN')}
                       </div>
-                      <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-slate-100 text-slate-700">
+                      <span className="inline-block mt-1 text-[11px] font-semibold px-2 py-0.5 rounded bg-[#F6F5F1] border border-[#E2DFD7] text-[#0B1426]">
                         {inv.status}
                       </span>
                     </div>
@@ -1579,11 +1648,11 @@ export const RestrictedClientPortal: React.FC<RestrictedClientPortalProps> = ({
 
         {/* Tab 4: Status Q&A */}
         {activeTab === 'qa' && scopes.chatAi && (
-          <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-4">
-            <h2 className="text-base font-bold text-slate-900">Client Matter Status Q&amp;A</h2>
-            <div className="space-y-3 max-h-80 overflow-y-auto p-3 bg-slate-50 rounded-xl border border-slate-200">
+          <div className="bg-white rounded-xl border border-[#E2DFD7] p-6 shadow-2xs space-y-4">
+            <h2 className="text-sm font-bold text-[#0B1426]">Matter Status Q&amp;A</h2>
+            <div className="space-y-3 max-h-80 overflow-y-auto p-3.5 bg-[#F6F5F1] rounded-xl border border-[#E2DFD7]">
               {chatHistory.length === 0 ? (
-                <p className="text-xs text-slate-400">
+                <p className="text-xs text-[#64748B]">
                   Ask a question about your matter&apos;s current stage or next listed hearing date.
                 </p>
               ) : (
@@ -1592,8 +1661,8 @@ export const RestrictedClientPortal: React.FC<RestrictedClientPortalProps> = ({
                     key={idx}
                     className={`p-3 rounded-xl text-xs ${
                       m.role === 'client'
-                        ? 'bg-indigo-600 text-white ml-auto max-w-md'
-                        : 'bg-white border border-slate-200 text-slate-800 max-w-lg'
+                        ? 'bg-[#0B1426] text-white ml-auto max-w-md'
+                        : 'bg-white border border-[#E2DFD7] text-[#0B1426] max-w-lg'
                     }`}
                   >
                     {m.text}
@@ -1607,14 +1676,14 @@ export const RestrictedClientPortal: React.FC<RestrictedClientPortalProps> = ({
                 value={question}
                 onChange={(e) => setQuestion(e.target.value)}
                 placeholder="Ask about your next hearing date..."
-                className="flex-1 px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs"
+                className="flex-1 px-3.5 py-2 bg-white border border-[#CBD5E1] rounded-lg text-xs focus:outline-none focus:border-[#0B1426]"
               />
               <button
                 type="submit"
                 disabled={isAsking}
-                className="px-4 py-2.5 bg-indigo-600 text-white rounded-xl text-xs font-bold"
+                className="px-4 py-2 bg-[#0B1426] hover:bg-[#16233D] text-white rounded-lg text-xs font-semibold cursor-pointer disabled:opacity-50"
               >
-                <Send className="w-3.5 h-3.5" />
+                <Send className="w-3.5 h-3.5 text-[#C49A36]" />
               </button>
             </form>
           </div>
@@ -1622,12 +1691,16 @@ export const RestrictedClientPortal: React.FC<RestrictedClientPortalProps> = ({
 
         {/* Client Document Upload Modal */}
         {isUploadModalOpen && scopes.uploadDocs && (
-          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className="bg-white rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl">
-              <div className="flex items-center justify-between">
-                <h3 className="text-base font-bold text-slate-900">Upload Supporting Document</h3>
-                <button onClick={() => setIsUploadModalOpen(false)}>
-                  <X className="w-4 h-4 text-slate-400" />
+          <div className="fixed inset-0 bg-[#0B1426]/65 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+            <div className="bg-white border border-[#E2DFD7] rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+              <div className="flex items-center justify-between border-b border-[#E2DFD7] pb-3">
+                <h3 className="text-base font-bold text-[#0B1426]">Upload supporting document</h3>
+                <button
+                  type="button"
+                  onClick={() => setIsUploadModalOpen(false)}
+                  className="text-[#64748B] hover:text-[#0B1426] cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
                 </button>
               </div>
               <form onSubmit={handleClientDocumentUpload} className="space-y-3">
@@ -1636,37 +1709,37 @@ export const RestrictedClientPortal: React.FC<RestrictedClientPortalProps> = ({
                   required
                   value={uploadTitle}
                   onChange={(e) => setUploadTitle(e.target.value)}
-                  placeholder="Document title (e.g., Certified Receipt)"
-                  className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs"
+                  placeholder="Document title"
+                  className="w-full px-3 py-2 bg-white border border-[#CBD5E1] rounded-lg text-xs focus:outline-none focus:border-[#0B1426]"
                 />
                 <textarea
                   rows={4}
                   value={uploadContent}
                   onChange={(e) => setUploadContent(e.target.value)}
-                  placeholder="Paste document text or notes..."
-                  className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs"
+                  placeholder="Document notes or text..."
+                  className="w-full px-3 py-2 bg-white border border-[#CBD5E1] rounded-lg text-xs focus:outline-none focus:border-[#0B1426]"
                 />
-                {uploadStatus && <p className="text-xs text-slate-600">{uploadStatus}</p>}
-                <div className="flex justify-end gap-2">
+                {uploadStatus && <p className="text-xs text-[#475569]">{uploadStatus}</p>}
+                <div className="flex justify-end gap-2 pt-2">
                   <button
                     type="button"
                     onClick={() => setIsUploadModalOpen(false)}
-                    className="px-3.5 py-2 bg-slate-100 rounded-xl text-xs font-bold"
+                    className="px-3.5 py-2 bg-white border border-[#E2DFD7] rounded-lg text-xs font-semibold cursor-pointer"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
-                    className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold"
+                    className="px-4 py-2 bg-[#0B1426] hover:bg-[#16233D] text-white rounded-lg text-xs font-semibold cursor-pointer"
                   >
-                    Submit Document
+                    Submit document
                   </button>
                 </div>
               </form>
             </div>
           </div>
         )}
-      </div>
+      </main>
     </div>
   );
 };

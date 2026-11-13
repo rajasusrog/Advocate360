@@ -1,31 +1,27 @@
 import React, { useState } from 'react';
-import { 
-  Calendar, 
-  CheckCircle2, 
-  Clock, 
-  AlertTriangle, 
-  Download, 
-  Volume2, 
-  VolumeX, 
-  Share2, 
-  Check, 
-  Sparkles, 
-  MapPin, 
-  User, 
-  Gavel, 
+import {
+  Calendar,
+  Check,
+  Clock,
+  AlertTriangle,
+  Download,
+  Volume2,
+  VolumeX,
+  Share2,
+  MapPin,
+  User,
+  Gavel,
   ArrowUpRight,
   Printer,
   ChevronRight,
   Bell,
   CheckCheck,
-  ShieldAlert,
-  Flame,
-  FileCheck,
-  ExternalLink
+  Plus,
 } from 'lucide-react';
 import { CalendarEvent, PracticeTask, CaseFile, NotificationItem } from '../types';
 import { downloadICS } from '../lib/calendarExport';
 import { logAuditEvent } from '../lib/auditLogger';
+import { StatusBadge } from './ui/StatusBadge';
 
 interface DailyBriefingProps {
   cases: CaseFile[];
@@ -37,6 +33,8 @@ interface DailyBriefingProps {
   onToggleTask?: (taskId: string) => void;
   onMarkNotificationAsRead?: (notificationId: string) => void;
   onMarkAllNotificationsAsRead?: () => void;
+  onOpenScheduleHearing?: (matterId?: string) => void;
+  onOpenNewTaskModal?: () => void;
 }
 
 export const DailyBriefing: React.FC<DailyBriefingProps> = ({
@@ -48,81 +46,92 @@ export const DailyBriefing: React.FC<DailyBriefingProps> = ({
   setSelectedCaseId,
   onToggleTask,
   onMarkNotificationAsRead,
-  onMarkAllNotificationsAsRead
+  onMarkAllNotificationsAsRead,
+  onOpenScheduleHearing,
+  onOpenNewTaskModal,
 }) => {
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
   const [copiedSummary, setCopiedSummary] = useState(false);
-  const [filterView, setFilterView] = useState<'today' | 'week'>('today');
-  const [notificationFilter, setNotificationFilter] = useState<'unread' | 'all'>('unread');
+  const [filterView, setFilterView] = useState<'today' | 'upcoming'>('upcoming');
+  const [notificationFilter, setNotificationFilter] = useState<'attention' | 'all'>('attention');
 
-  // Format today's date in local and Indian Court format
   const todayObj = new Date();
-  const todayStr = todayObj.toISOString().split('T')[0]; // 'YYYY-MM-DD'
+  const todayStr = todayObj.toISOString().split('T')[0];
   const todayFormatted = todayObj.toLocaleDateString('en-IN', {
     weekday: 'long',
     year: 'numeric',
     month: 'long',
-    day: 'numeric'
+    day: 'numeric',
   });
 
-  // Hearings filter: if today has fixtures use today, otherwise show upcoming fixtures
-  const todayHearings = calendarEvents.filter(e => e.date === todayStr);
-  const displayHearings = filterView === 'today' && todayHearings.length > 0 
-    ? todayHearings 
-    : calendarEvents.slice(0, 5);
+  // Sort upcoming hearings cleanly using existing calendarEvents + matter nextHearingDate fallback
+  const sortedHearings = [...calendarEvents].sort((a, b) => a.date.localeCompare(b.date));
+  const todayHearings = sortedHearings.filter((e) => e.date === todayStr);
+  const upcomingHearings = sortedHearings.filter((e) => e.date >= todayStr);
+  const displayHearings =
+    filterView === 'today'
+      ? todayHearings
+      : (upcomingHearings.length > 0 ? upcomingHearings : sortedHearings).slice(0, 6);
 
-  // Critical deadlines & urgent pending tasks
-  const urgentTasks = tasks.filter(t => t.status !== 'Completed' && (t.priority === 'High' || t.dueDate <= todayStr));
-  const otherTasks = tasks.filter(t => t.status !== 'Completed' && t.priority !== 'High');
+  // Due & pending tasks sorted by priority & due date
+  const priorityRank: Record<string, number> = { High: 0, Medium: 1, Low: 2 };
+  const pendingTasks = tasks
+    .filter((t) => t.status !== 'Completed')
+    .sort((a, b) => {
+      const aDue = a.dueDate || '9999-12-31';
+      const bDue = b.dueDate || '9999-12-31';
+      if (aDue !== bDue) return aDue.localeCompare(bDue);
+      return (priorityRank[a.priority] ?? 2) - (priorityRank[b.priority] ?? 2);
+    });
 
-  // Critical Chamber Statutory & Procedural Deadlines
-  const criticalDeadlines = [
-    {
-      id: 'deadline-1',
-      title: 'Limitation Expiry Alert (Art. 59 Limitation Act)',
-      matter: 'Ramesh Kumar vs. Suresh Kumar',
-      message: '3-year limitation to cancel 2021 unregistered deed is approaching. File rejoinder prior to next date.',
-      severity: 'CRITICAL',
-      cutoff: 'Today, 4:00 PM Registry',
-      caseId: 'case-101',
-      tab: 'risk'
-    },
-    {
-      id: 'deadline-2',
-      title: 'Section 65B / BSA Electronic Evidence Affidavit',
-      matter: 'State vs. Vikram Anand',
-      message: 'WhatsApp transcript records must be submitted with mandatory advocate certificate under Sec 65B.',
-      severity: 'URGENT',
-      cutoff: 'Prior to Trial Call',
-      caseId: 'case-103',
-      tab: 'repository'
-    },
-    {
-      id: 'deadline-3',
-      title: 'Commercial Suit Written Statement Filing Window',
-      matter: 'Apex Tech Ltd vs. Vertex Infra',
-      message: '30-day statutory window under Commercial Courts Act requires filing rejoinder with certified invoices.',
-      severity: 'HIGH',
-      cutoff: '2 Days Remaining',
-      caseId: 'case-102',
-      tab: 'workflow'
-    }
-  ];
+  // Matters needing attention computed strictly from real chamber data
+  const activeCases = cases.filter((c) => c.status !== 'Archived' && c.status !== 'Closed');
+  const mattersNeedingAttention = activeCases
+    .map((matter) => {
+      const overdueTasks = pendingTasks.filter(
+        (t) => t.caseId === matter.id && t.dueDate && t.dueDate <= todayStr
+      );
+      const nextHearing = matter.nextHearingDate;
+      const daysToHearing = nextHearing
+        ? Math.ceil((new Date(nextHearing).getTime() - Date.now()) / 86400000)
+        : null;
+      const reasons: string[] = [];
 
-  // Unread case notifications
-  const unreadNotifications = notifications.filter(n => !n.isRead);
-  const displayedNotifications = notificationFilter === 'unread' ? unreadNotifications : notifications;
+      if (overdueTasks.length > 0) {
+        reasons.push(`${overdueTasks.length} due or overdue task${overdueTasks.length > 1 ? 's' : ''}`);
+      }
+      if (daysToHearing !== null && daysToHearing >= 0 && daysToHearing <= 3) {
+        reasons.push(
+          daysToHearing === 0 ? 'Hearing listed today' : `Hearing in ${daysToHearing}d (${nextHearing})`
+        );
+      } else if (!nextHearing) {
+        reasons.push('No upcoming hearing scheduled');
+      }
+      if (matter.caseAssessment?.riskFactors && matter.caseAssessment.riskFactors.length > 0) {
+        reasons.push(matter.caseAssessment.riskFactors[0]);
+      }
 
-  // AI Synopsis Generation
-  const aiSynopsis = `Good morning Advocate. For ${todayFormatted}, your chamber has ${displayHearings.length} scheduled court hearings, with primary listing at ${displayHearings[0]?.court || 'City Civil Court'} (${displayHearings[0]?.time || '10:30 AM'}). There are ${criticalDeadlines.length} critical statutory deadlines and ${urgentTasks.length} urgent tasks pending before registry filing cutoff at 4:00 PM. You have ${unreadNotifications.length} unread case notification${unreadNotifications.length === 1 ? '' : 's'} requiring immediate attention.`;
+      if (reasons.length === 0) return null;
+      return {
+        matter,
+        severity:
+          overdueTasks.length > 0 || (daysToHearing !== null && daysToHearing <= 1)
+            ? ('warning' as const)
+            : ('info' as const),
+        reason: reasons.slice(0, 2).join(' • '),
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => item !== null)
+    .slice(0, 5);
 
-  // Speech synthesis for AI Daily Briefing readout
+  const unreadNotifications = notifications.filter((n) => !n.isRead);
+
+  const aiSynopsis = `Briefing for ${todayFormatted}. You have ${displayHearings.length} scheduled court hearing${displayHearings.length === 1 ? '' : 's'}, ${pendingTasks.length} pending preparation task${pendingTasks.length === 1 ? '' : 's'}, and ${mattersNeedingAttention.length} matter${mattersNeedingAttention.length === 1 ? '' : 's'} needing attention.`;
+
   const handleToggleSpeech = () => {
     if (typeof window === 'undefined' || !window.speechSynthesis) {
-      alert('Text-to-speech is not supported by your browser.');
       return;
     }
-
     if (isPlayingAudio) {
       window.speechSynthesis.cancel();
       setIsPlayingAudio(false);
@@ -130,12 +139,11 @@ export const DailyBriefing: React.FC<DailyBriefingProps> = ({
       window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(aiSynopsis);
       utterance.rate = 1.0;
-      utterance.pitch = 1.0;
       utterance.onend = () => setIsPlayingAudio(false);
       utterance.onerror = () => setIsPlayingAudio(false);
       window.speechSynthesis.speak(utterance);
       setIsPlayingAudio(true);
-      logAuditEvent('AI_GENERATION', 'Advocate played Morning Daily Briefing audio synopsis');
+      logAuditEvent('AI_GENERATION', 'Advocate played Today briefing audio synopsis');
     }
   };
 
@@ -150,447 +158,443 @@ export const DailyBriefing: React.FC<DailyBriefingProps> = ({
 
   const handleCopyCauseList = () => {
     const listText = [
-      `=== ADVOCATE360 MORNING CAUSE LIST & BRIEFING ===`,
-      `Date: ${todayFormatted}`,
+      `ADVOCATE360 DAILY CAUSE LIST — ${todayFormatted}`,
       ``,
-      `[TODAY'S COURT HEARINGS]`,
-      ...displayHearings.map((h, i) => `${i + 1}. [${h.time}] ${h.court} - ${h.caseTitle} (${h.hearingType}) | Bench: ${h.judge || 'Hon. Court'}`),
+      `UPCOMING HEARINGS (${displayHearings.length}):`,
+      ...displayHearings.map(
+        (h, i) => `${i + 1}. ${h.date} ${h.time} | ${h.court} — ${h.caseTitle} (${h.hearingType})`
+      ),
       ``,
-      `[CRITICAL STATUTORY DEADLINES]`,
-      ...criticalDeadlines.map((d, i) => `${i + 1}. [${d.severity}] ${d.title} - ${d.matter} (Cutoff: ${d.cutoff})`),
+      `DUE TASKS (${pendingTasks.length}):`,
+      ...pendingTasks
+        .slice(0, 10)
+        .map((t, i) => `${i + 1}. Due ${t.dueDate || 'TBD'}: ${t.title} [${t.priority}]`),
       ``,
-      `[URGENT ACTION ITEMS]`,
-      ...urgentTasks.map((t, i) => `${i + 1}. Due ${t.dueDate}: ${t.title} [Priority: ${t.priority}] (Assigned: ${t.assignedTo || 'Chamber'})`),
-      ``,
-      `[UNREAD CASE NOTIFICATIONS: ${unreadNotifications.length}]`,
-      ...unreadNotifications.map((n, i) => `${i + 1}. [${n.category.toUpperCase()}] ${n.title}: ${n.body}`)
+      `MATTERS NEEDING ATTENTION (${mattersNeedingAttention.length}):`,
+      ...mattersNeedingAttention.map(
+        (m, i) => `${i + 1}. ${m.matter.title}: ${m.reason}`
+      ),
     ].join('\n');
 
-    navigator.clipboard.writeText(listText);
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      navigator.clipboard.writeText(listText);
+    }
     setCopiedSummary(true);
     setTimeout(() => setCopiedSummary(false), 2500);
   };
 
-  const handlePrint = () => {
-    window.print();
-  };
-
   return (
-    <div className="bg-[#F5F2EF] border-2 border-[#1A1A1A] text-[#1A1A1A] p-5 lg:p-7 space-y-6 shadow-sm">
-      
-      {/* Top Banner & Control Ribbon */}
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b-2 border-[#1A1A1A] pb-5">
-        <div className="space-y-1">
+    <div className="space-y-5 text-[#0B1426]">
+      {/* Compact Utility Bar */}
+      <div className="bg-white border border-[#E2DFD7] rounded-xl p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4 shadow-2xs">
+        <div className="space-y-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-[10px] uppercase font-bold tracking-[0.2em] bg-[#1A1A1A] text-amber-400 px-2.5 py-0.5">
-              Daily Briefing Command
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-[#C49A36]">
+              Daily Cause List
             </span>
-            <span className="text-[10px] font-mono uppercase tracking-widest text-[#B45309] font-bold">
-              • Working Court Day
-            </span>
-            {unreadNotifications.length > 0 && (
-              <span className="text-[10px] font-bold uppercase tracking-wider bg-rose-100 text-rose-800 border border-rose-300 px-2 py-0.5 flex items-center gap-1 animate-pulse">
-                <Bell className="w-3 h-3 text-rose-700" />
-                {unreadNotifications.length} Unread Notifications
-              </span>
-            )}
+            <span className="text-xs text-[#64748B]">• {todayFormatted}</span>
           </div>
-          
-          <h2 className="font-serif text-2xl sm:text-3xl font-bold italic text-[#1A1A1A]">
-            Advocate Daily Briefing — {todayFormatted}
-          </h2>
-          <p className="text-xs text-[#555555]">
-            Aggregating today's hearing schedule, critical court deadlines, and unread case alerts for the advocate.
-          </p>
+          <p className="text-sm text-[#475569] leading-relaxed">{aiSynopsis}</p>
         </div>
 
-        {/* Global Briefing Actions */}
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Audio Readout */}
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
           <button
+            type="button"
             onClick={handleToggleSpeech}
-            className={`px-3 py-2 text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 border transition-all ${
-              isPlayingAudio 
-                ? 'bg-rose-700 text-white border-rose-800 animate-pulse'
-                : 'bg-[#1A1A1A] hover:bg-black text-amber-400 border-[#1A1A1A]'
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 border transition-colors cursor-pointer ${
+              isPlayingAudio
+                ? 'bg-[#B91C1C] text-white border-[#B91C1C]'
+                : 'bg-[#F6F5F1] hover:bg-[#EFECE4] text-[#0B1426] border-[#E2DFD7]'
             }`}
-            title="Listen to AI Morning Audio Briefing"
+            title="Listen to daily briefing summary"
           >
             {isPlayingAudio ? (
               <>
                 <VolumeX className="w-3.5 h-3.5" />
-                <span>Stop Audio</span>
+                <span>Stop audio</span>
               </>
             ) : (
               <>
-                <Volume2 className="w-3.5 h-3.5 text-amber-400" />
-                <span>Audio Briefing</span>
+                <Volume2 className="w-3.5 h-3.5 text-[#C49A36]" />
+                <span>Audio briefing</span>
               </>
             )}
           </button>
 
-          {/* Export to .ICS */}
           <button
+            type="button"
             onClick={handleExportTodayICS}
-            className="px-3 py-2 bg-[#FDFCFB] hover:bg-white text-[#1A1A1A] border-2 border-[#1A1A1A] text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 transition-colors shadow-xs"
-            title="Sync Today's Hearings with Google Calendar / Outlook (.ics)"
+            className="px-3 py-1.5 bg-[#F6F5F1] hover:bg-[#EFECE4] text-[#0B1426] border border-[#E2DFD7] rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+            title="Sync hearings to calendar (.ics)"
           >
-            <Download className="w-3.5 h-3.5 text-[#B45309]" />
-            <span>Sync Calendar (.ICS)</span>
+            <Download className="w-3.5 h-3.5 text-[#0B1426]" />
+            <span>Export .ICS</span>
           </button>
 
-          {/* Copy Cause List */}
           <button
+            type="button"
             onClick={handleCopyCauseList}
-            className="px-3 py-2 bg-[#FDFCFB] hover:bg-white text-[#1A1A1A] border-2 border-[#1A1A1A] text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 transition-colors"
-            title="Copy Cause List text to clipboard"
+            className="px-3 py-1.5 bg-[#F6F5F1] hover:bg-[#EFECE4] text-[#0B1426] border border-[#E2DFD7] rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+            title="Copy cause list to clipboard"
           >
-            {copiedSummary ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Share2 className="w-3.5 h-3.5 text-slate-700" />}
-            <span>{copiedSummary ? 'Copied List' : 'Copy List'}</span>
+            {copiedSummary ? (
+              <Check className="w-3.5 h-3.5 text-[#15803D]" />
+            ) : (
+              <Share2 className="w-3.5 h-3.5 text-[#0B1426]" />
+            )}
+            <span>{copiedSummary ? 'Copied' : 'Copy summary'}</span>
           </button>
 
-          {/* Print */}
           <button
-            onClick={handlePrint}
-            className="p-2 bg-[#FDFCFB] hover:bg-white text-[#1A1A1A] border-2 border-[#1A1A1A] transition-colors"
-            title="Print Morning Cause List"
+            type="button"
+            onClick={() => window.print()}
+            className="p-1.5 bg-[#F6F5F1] hover:bg-[#EFECE4] text-[#0B1426] border border-[#E2DFD7] rounded-lg transition-colors cursor-pointer"
+            title="Print cause list"
           >
-            <Printer className="w-4 h-4 text-slate-700" />
+            <Printer className="w-4 h-4" />
           </button>
         </div>
       </div>
 
-      {/* AI Morning Synopsis Box */}
-      <div className="p-4 bg-[#1A1A1A] text-white border-2 border-[#1A1A1A] flex items-start gap-3">
-        <div className="w-8 h-8 rounded-none bg-amber-500 text-black flex items-center justify-center shrink-0 font-serif font-black">
-          <Sparkles className="w-4 h-4" />
-        </div>
-        <div className="space-y-1">
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] uppercase font-bold tracking-widest text-amber-400">
-              Chamber Intelligence Synopsis
-            </span>
-          </div>
-          <p className="text-xs sm:text-sm font-serif italic text-slate-200 leading-relaxed">
-            "{aiSynopsis}"
-          </p>
-        </div>
-      </div>
-
-      {/* Main 3-Column Briefing Grid: Hearings | Deadlines | Unread Notifications */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        
-        {/* Column 1: Today's Hearing Schedule */}
-        <div className="bg-[#FDFCFB] border-2 border-[#1A1A1A] p-4 flex flex-col justify-between space-y-4">
-          <div>
-            <div className="flex items-center justify-between border-b-2 border-[#1A1A1A] pb-2.5 mb-3">
-              <div className="flex items-center gap-2">
-                <Gavel className="w-4 h-4 text-rose-700" />
-                <h3 className="text-xs font-bold uppercase tracking-wider text-[#1A1A1A]">
-                  Hearing Schedule ({displayHearings.length})
+      {/* Priority 3-Column Grid: Upcoming Hearings | Due Tasks | Matters Needing Attention */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+        {/* Column 1: Upcoming Hearings */}
+        <section className="bg-white border border-[#E2DFD7] rounded-xl p-5 flex flex-col justify-between space-y-4 shadow-2xs">
+          <div className="space-y-3">
+            <div className="flex items-center justify-between border-b border-[#E2DFD7] pb-3 gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <Gavel className="w-4 h-4 text-[#C49A36] shrink-0" />
+                <h3 className="text-sm font-semibold text-[#0B1426] truncate">
+                  Upcoming hearings ({displayHearings.length})
                 </h3>
               </div>
-              <div className="flex items-center gap-1 text-[10px] font-mono">
+
+              <div className="flex items-center gap-1 bg-[#F6F5F1] p-0.5 rounded-lg border border-[#E2DFD7] text-[11px] font-medium shrink-0">
                 <button
-                  onClick={() => setFilterView('today')}
-                  className={`px-1.5 py-0.5 font-bold uppercase border ${
-                    filterView === 'today' ? 'bg-[#1A1A1A] text-white' : 'bg-slate-100 text-slate-600'
-                  }`}
-                >
-                  Today
-                </button>
-                <button
-                  onClick={() => setFilterView('week')}
-                  className={`px-1.5 py-0.5 font-bold uppercase border ${
-                    filterView === 'week' ? 'bg-[#1A1A1A] text-white' : 'bg-slate-100 text-slate-600'
+                  type="button"
+                  onClick={() => setFilterView('upcoming')}
+                  className={`px-2 py-0.5 rounded-md cursor-pointer ${
+                    filterView === 'upcoming'
+                      ? 'bg-[#0B1426] text-white'
+                      : 'text-[#475569] hover:text-[#0B1426]'
                   }`}
                 >
                   Upcoming
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setFilterView('today')}
+                  className={`px-2 py-0.5 rounded-md cursor-pointer ${
+                    filterView === 'today'
+                      ? 'bg-[#0B1426] text-white'
+                      : 'text-[#475569] hover:text-[#0B1426]'
+                  }`}
+                >
+                  Today
+                </button>
               </div>
             </div>
 
-            <div className="space-y-3">
-              {displayHearings.length === 0 ? (
-                <div className="p-4 text-center text-slate-500 italic text-xs">
-                  No scheduled hearings on today's cause list.
-                </div>
-              ) : (
-                displayHearings.map((evt) => (
+            {displayHearings.length === 0 ? (
+              <div className="py-8 text-center space-y-3">
+                <Calendar className="w-7 h-7 text-[#64748B] mx-auto" />
+                <p className="text-xs text-[#64748B]">
+                  {filterView === 'today'
+                    ? 'No hearings scheduled for today.'
+                    : 'No upcoming hearings scheduled yet.'}
+                </p>
+                {onOpenScheduleHearing && cases.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenScheduleHearing()}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#0B1426] hover:bg-[#16233D] text-white text-xs font-semibold rounded-lg cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5 text-[#C49A36]" />
+                    <span>Schedule hearing</span>
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                {displayHearings.map((evt) => (
                   <div
                     key={evt.id}
-                    className="p-3 bg-[#F9F7F5] border border-[#1A1A1A] space-y-2 hover:border-amber-600 transition-colors"
+                    className="p-3.5 bg-[#F6F5F1] border border-[#E2DFD7] rounded-lg space-y-2 hover:border-[#0B1426]/40 transition-colors"
                   >
                     <div className="flex items-start justify-between gap-2">
-                      <span className="font-mono text-[10px] font-bold text-[#B45309] bg-amber-100 px-1.5 py-0.5 border border-amber-300">
-                        {evt.time} • {evt.date}
+                      <span className="text-[11px] font-semibold text-[#0B1426] u360-table-numeric">
+                        {evt.date} • {evt.time}
                       </span>
-                      <span className="text-[9px] font-bold uppercase tracking-widest bg-[#1A1A1A] text-white px-1.5 py-0.2">
-                        {evt.hearingType}
-                      </span>
+                      <StatusBadge label={evt.hearingType} tone="gold" />
                     </div>
 
                     <div>
-                      <h4 className="font-serif font-bold italic text-sm text-[#1A1A1A] line-clamp-1">
+                      <h4 className="font-semibold text-sm text-[#0B1426] line-clamp-1">
                         {evt.caseTitle}
                       </h4>
-                      <p className="text-xs text-slate-600 flex items-center gap-1 mt-0.5">
-                        <MapPin className="w-3 h-3 text-rose-700 shrink-0" />
+                      <p className="text-xs text-[#475569] flex items-center gap-1 mt-0.5">
+                        <MapPin className="w-3 h-3 text-[#C49A36] shrink-0" />
                         <span className="truncate">{evt.court}</span>
                       </p>
                       {evt.judge && (
-                        <p className="text-[11px] text-slate-500 flex items-center gap-1 mt-0.5">
-                          <User className="w-3 h-3 text-slate-400 shrink-0" />
-                          <span>{evt.judge}</span>
+                        <p className="text-[11px] text-[#64748B] flex items-center gap-1 mt-0.5">
+                          <User className="w-3 h-3 shrink-0" />
+                          <span className="truncate">{evt.judge}</span>
                         </p>
                       )}
                     </div>
 
-                    <div className="pt-2 border-t border-slate-300 flex items-center justify-between text-xs">
+                    <div className="pt-2 border-t border-[#E2DFD7] flex items-center justify-between text-xs">
                       <button
+                        type="button"
                         onClick={() => {
                           if (setSelectedCaseId) setSelectedCaseId(evt.caseId);
-                          onNavigateTab('hearing');
+                          onNavigateTab(`matters/${evt.caseId}/work`);
                         }}
-                        className="text-[10px] font-bold uppercase text-[#B45309] hover:underline flex items-center gap-0.5"
+                        className="text-xs font-semibold text-[#0B1426] hover:text-[#C49A36] flex items-center gap-1 cursor-pointer"
                       >
-                        Prepare Brief <ArrowUpRight className="w-3 h-3" />
+                        <span>Open matter</span>
+                        <ArrowUpRight className="w-3.5 h-3.5" />
                       </button>
 
                       <button
+                        type="button"
                         onClick={() => downloadICS([evt], `Hearing_${evt.caseId}.ics`)}
-                        className="text-[10px] font-mono text-slate-600 hover:text-black flex items-center gap-1"
-                        title="Export this single hearing to .ics"
+                        className="text-[11px] font-medium text-[#475569] hover:text-[#0B1426] flex items-center gap-1 cursor-pointer"
                       >
                         <Download className="w-3 h-3" />
                         <span>.ICS</span>
                       </button>
                     </div>
                   </div>
-                ))
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2 pt-2 border-t border-[#E2DFD7]">
+            {onOpenScheduleHearing && cases.length > 0 && (
+              <button
+                type="button"
+                onClick={() => onOpenScheduleHearing()}
+                className="flex-1 py-2 bg-[#0B1426] hover:bg-[#16233D] text-white text-xs font-semibold rounded-lg text-center transition-colors cursor-pointer"
+              >
+                Schedule hearing
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => onNavigateTab('work')}
+              className="flex-1 py-2 bg-white hover:bg-[#F6F5F1] text-[#0B1426] border border-[#E2DFD7] text-xs font-semibold rounded-lg text-center transition-colors cursor-pointer"
+            >
+              All hearings
+            </button>
+          </div>
+        </section>
+
+        {/* Column 2: Due Tasks */}
+        <section className="bg-white border border-[#E2DFD7] rounded-xl p-5 flex flex-col justify-between space-y-4 shadow-2xs">
+          <div className="space-y-3">
+            <div className="flex items-center justify-between border-b border-[#E2DFD7] pb-3 gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <Clock className="w-4 h-4 text-[#C49A36] shrink-0" />
+                <h3 className="text-sm font-semibold text-[#0B1426] truncate">
+                  Due tasks ({pendingTasks.length})
+                </h3>
+              </div>
+              {onOpenNewTaskModal && (
+                <button
+                  type="button"
+                  onClick={onOpenNewTaskModal}
+                  className="text-xs font-semibold text-[#0B1426] hover:text-[#C49A36] flex items-center gap-1 cursor-pointer shrink-0"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Add task</span>
+                </button>
               )}
             </div>
-          </div>
 
-          <button
-            onClick={() => onNavigateTab('hearing')}
-            className="w-full py-2 bg-[#1A1A1A] text-amber-400 hover:bg-black text-[11px] font-bold uppercase tracking-wider text-center border border-[#1A1A1A] transition-colors"
-          >
-            Open Comprehensive Hearing Brief
-          </button>
-        </div>
-
-        {/* Column 2: Critical Deadlines & High-Priority Actions */}
-        <div className="bg-[#FDFCFB] border-2 border-[#1A1A1A] p-4 flex flex-col justify-between space-y-4">
-          <div>
-            <div className="flex items-center justify-between border-b-2 border-[#1A1A1A] pb-2.5 mb-3">
-              <div className="flex items-center gap-2">
-                <Clock className="w-4 h-4 text-purple-700" />
-                <h3 className="text-xs font-bold uppercase tracking-wider text-[#1A1A1A]">
-                  Critical Deadlines ({criticalDeadlines.length})
-                </h3>
+            {pendingTasks.length === 0 ? (
+              <div className="py-8 text-center space-y-2">
+                <CheckCheck className="w-7 h-7 text-[#15803D] mx-auto" />
+                <p className="text-xs text-[#64748B]">All tasks are complete or up to date.</p>
               </div>
-              <span className="text-[9px] uppercase font-bold tracking-widest bg-rose-700 text-white px-1.5 py-0.2">
-                Registry Cutoff: 4 PM
-              </span>
-            </div>
-
-            <div className="space-y-3">
-              {/* Statutory limitation and filing deadlines */}
-              {criticalDeadlines.map((d) => (
-                <div
-                  key={d.id}
-                  className="p-3 bg-red-50/60 border border-red-800 space-y-1.5 hover:bg-red-50 transition-colors"
-                >
-                  <div className="flex items-center justify-between gap-1">
-                    <span className="text-[8px] font-black uppercase tracking-wider bg-red-700 text-white px-1.5 py-0.2">
-                      {d.severity}
-                    </span>
-                    <span className="text-[10px] font-mono text-red-900 font-bold">
-                      {d.cutoff}
-                    </span>
-                  </div>
-
-                  <h4 className="font-serif font-bold text-xs text-red-950">
-                    {d.title}
-                  </h4>
-
-                  <p className="text-[11px] text-red-900/90 leading-relaxed font-sans">
-                    {d.message}
-                  </p>
-
-                  <div className="pt-1.5 border-t border-red-200 flex justify-between items-center text-[10px]">
-                    <span className="text-slate-600 font-serif italic truncate max-w-[140px]">{d.matter}</span>
-                    <button
-                      onClick={() => {
-                        if (setSelectedCaseId) setSelectedCaseId(d.caseId);
-                        onNavigateTab(d.tab);
-                      }}
-                      className="font-bold uppercase tracking-wider text-red-800 hover:text-black flex items-center gap-0.5"
-                    >
-                      Address Now <ChevronRight className="w-3 h-3" />
-                    </button>
-                  </div>
-                </div>
-              ))}
-
-              {/* Priority chamber tasks */}
-              <div className="pt-2 border-t border-slate-300">
-                <div className="text-[10px] uppercase font-bold text-slate-500 mb-2 flex items-center justify-between">
-                  <span>Priority Chamber Tasks ({urgentTasks.length})</span>
-                </div>
-                <div className="space-y-2">
-                  {urgentTasks.slice(0, 2).map((t) => (
+            ) : (
+              <div className="space-y-2.5">
+                {pendingTasks.slice(0, 6).map((task) => {
+                  const isOverdue = Boolean(task.dueDate && task.dueDate < todayStr);
+                  return (
                     <div
-                      key={t.id}
-                      className="p-2 bg-[#F9F7F5] border border-slate-300 flex items-start justify-between gap-2"
+                      key={task.id}
+                      className="p-3 bg-[#F6F5F1] border border-[#E2DFD7] rounded-lg flex items-start justify-between gap-2.5"
                     >
-                      <div className="flex items-start gap-2">
+                      <div className="flex items-start gap-2.5 min-w-0">
                         <input
                           type="checkbox"
-                          checked={t.status === 'Completed'}
-                          onChange={() => onToggleTask && onToggleTask(t.id)}
-                          className="mt-0.5 accent-[#B45309] cursor-pointer"
+                          checked={task.status === 'Completed'}
+                          onChange={() => onToggleTask && onToggleTask(task.id)}
+                          aria-label={`Mark ${task.title} complete`}
+                          className="mt-1 accent-[#0B1426] cursor-pointer shrink-0"
                         />
-                        <div>
-                          <p className="font-serif font-bold italic text-xs text-[#1A1A1A] leading-tight">
-                            {t.title}
+                        <div className="min-w-0">
+                          <p className="text-xs font-semibold text-[#0B1426] leading-snug">
+                            {task.title}
                           </p>
-                          <span className="text-[10px] font-mono text-slate-500">Due: {t.dueDate}</span>
+                          <p
+                            className={`text-[11px] mt-0.5 u360-table-numeric ${
+                              isOverdue ? 'text-[#B91C1C] font-semibold' : 'text-[#64748B]'
+                            }`}
+                          >
+                            {task.dueDate ? `Due ${task.dueDate}` : 'No due date'} • {task.category}
+                          </p>
                         </div>
                       </div>
-                      <span className="text-[8px] font-bold uppercase px-1 py-0.2 bg-amber-100 text-amber-800 shrink-0">
-                        {t.priority}
-                      </span>
+                      <StatusBadge
+                        label={task.priority}
+                        tone={
+                          task.priority === 'High'
+                            ? 'danger'
+                            : task.priority === 'Medium'
+                              ? 'gold'
+                              : 'neutral'
+                        }
+                      />
                     </div>
-                  ))}
-                </div>
+                  );
+                })}
               </div>
-            </div>
+            )}
           </div>
 
           <button
-            onClick={() => onNavigateTab('workflow')}
-            className="w-full py-2 bg-[#FDFCFB] hover:bg-white text-[#1A1A1A] text-[11px] font-bold uppercase tracking-wider text-center border-2 border-[#1A1A1A] transition-colors"
+            type="button"
+            onClick={() => onNavigateTab('work')}
+            className="w-full py-2 bg-white hover:bg-[#F6F5F1] text-[#0B1426] text-xs font-semibold rounded-lg text-center border border-[#E2DFD7] transition-colors cursor-pointer"
           >
-            Open Chamber Workflow Board
+            Open calendar &amp; tasks
           </button>
-        </div>
+        </section>
 
-        {/* Column 3: Unread Case Notifications */}
-        <div className="bg-[#FDFCFB] border-2 border-[#1A1A1A] p-4 flex flex-col justify-between space-y-4">
-          <div>
-            <div className="flex items-center justify-between border-b-2 border-[#1A1A1A] pb-2.5 mb-3">
-              <div className="flex items-center gap-2">
-                <Bell className="w-4 h-4 text-[#B45309]" />
-                <h3 className="text-xs font-bold uppercase tracking-wider text-[#1A1A1A]">
-                  Unread Notifications ({unreadNotifications.length})
+        {/* Column 3: Matters Needing Attention & Notifications */}
+        <section className="bg-white border border-[#E2DFD7] rounded-xl p-5 flex flex-col justify-between space-y-4 shadow-2xs">
+          <div className="space-y-3">
+            <div className="flex items-center justify-between border-b border-[#E2DFD7] pb-3 gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <AlertTriangle className="w-4 h-4 text-[#C49A36] shrink-0" />
+                <h3 className="text-sm font-semibold text-[#0B1426] truncate">
+                  Matters needing attention
                 </h3>
               </div>
-              
-              <div className="flex items-center gap-1.5">
-                <div className="flex items-center gap-1 text-[10px] font-mono">
+
+              {notifications.length > 0 && (
+                <div className="flex items-center gap-1 bg-[#F6F5F1] p-0.5 rounded-lg border border-[#E2DFD7] text-[11px] font-medium shrink-0">
                   <button
-                    onClick={() => setNotificationFilter('unread')}
-                    className={`px-1.5 py-0.5 font-bold uppercase border ${
-                      notificationFilter === 'unread' ? 'bg-[#1A1A1A] text-white' : 'bg-slate-100 text-slate-600'
+                    type="button"
+                    onClick={() => setNotificationFilter('attention')}
+                    className={`px-2 py-0.5 rounded-md cursor-pointer ${
+                      notificationFilter === 'attention'
+                        ? 'bg-[#0B1426] text-white'
+                        : 'text-[#475569]'
                     }`}
                   >
-                    Unread
+                    Matters ({mattersNeedingAttention.length})
                   </button>
                   <button
+                    type="button"
                     onClick={() => setNotificationFilter('all')}
-                    className={`px-1.5 py-0.5 font-bold uppercase border ${
-                      notificationFilter === 'all' ? 'bg-[#1A1A1A] text-white' : 'bg-slate-100 text-slate-600'
+                    className={`px-2 py-0.5 rounded-md cursor-pointer ${
+                      notificationFilter === 'all' ? 'bg-[#0B1426] text-white' : 'text-[#475569]'
                     }`}
                   >
-                    All ({notifications.length})
+                    Alerts ({unreadNotifications.length})
                   </button>
                 </div>
+              )}
+            </div>
 
+            {notificationFilter === 'all' && notifications.length > 0 ? (
+              <div className="space-y-2.5">
+                {notifications.slice(0, 5).map((n) => (
+                  <div
+                    key={n.id}
+                    className="p-3 rounded-lg bg-[#F6F5F1] border border-[#E2DFD7] space-y-1"
+                  >
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="font-semibold text-[#0B1426]">{n.title}</span>
+                      <span className="text-[#64748B]">{n.timestamp}</span>
+                    </div>
+                    <p className="text-xs text-[#475569] line-clamp-2">{n.body}</p>
+                    {!n.isRead && onMarkNotificationAsRead && (
+                      <button
+                        type="button"
+                        onClick={() => onMarkNotificationAsRead(n.id)}
+                        className="text-[11px] font-semibold text-[#0B1426] hover:underline cursor-pointer"
+                      >
+                        Mark read
+                      </button>
+                    )}
+                  </div>
+                ))}
                 {unreadNotifications.length > 0 && onMarkAllNotificationsAsRead && (
                   <button
+                    type="button"
                     onClick={onMarkAllNotificationsAsRead}
-                    className="text-[9px] font-bold uppercase tracking-wider text-[#B45309] hover:underline"
-                    title="Mark all notifications as read"
+                    className="text-xs font-semibold text-[#C49A36] hover:underline cursor-pointer"
                   >
-                    Clear All
+                    Mark all alerts read
                   </button>
                 )}
               </div>
-            </div>
-
-            <div className="space-y-2.5">
-              {displayedNotifications.length === 0 ? (
-                <div className="p-6 text-center text-slate-500 italic text-xs space-y-2">
-                  <CheckCheck className="w-6 h-6 text-emerald-600 mx-auto" />
-                  <p>All case notifications are up to date.</p>
-                </div>
-              ) : (
-                displayedNotifications.map((n) => (
+            ) : mattersNeedingAttention.length === 0 ? (
+              <div className="py-8 text-center space-y-2">
+                <Bell className="w-7 h-7 text-[#64748B] mx-auto" />
+                <p className="text-xs text-[#64748B]">
+                  All active matters are on schedule with no overdue tasks.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                {mattersNeedingAttention.map(({ matter, severity, reason }) => (
                   <div
-                    key={n.id}
-                    className={`p-3 border transition-colors space-y-1.5 ${
-                      !n.isRead 
-                        ? 'bg-amber-50/40 border-amber-500' 
-                        : 'bg-[#F9F7F5] border-slate-300 opacity-80'
-                    }`}
+                    key={matter.id}
+                    onClick={() => {
+                      if (setSelectedCaseId) setSelectedCaseId(matter.id);
+                      onNavigateTab(`matters/${matter.id}/overview`);
+                    }}
+                    className="p-3.5 bg-[#F6F5F1] border border-[#E2DFD7] rounded-lg space-y-1.5 hover:border-[#0B1426]/40 cursor-pointer transition-colors"
                   >
-                    <div className="flex items-center justify-between gap-1">
-                      <div className="flex items-center gap-1.5">
-                        <span className={`w-2 h-2 rounded-full ${!n.isRead ? 'bg-amber-500 animate-ping' : 'bg-slate-300'}`} />
-                        <span className="text-[9px] font-bold uppercase tracking-wider text-slate-600">
-                          {n.category.replace('_', ' ')}
-                        </span>
-                      </div>
-                      <span className="text-[10px] font-mono text-slate-400">
-                        {n.timestamp}
+                    <div className="flex items-center justify-between gap-2">
+                      <StatusBadge
+                        label={matter.status}
+                        tone={severity === 'warning' ? 'warning' : 'navy'}
+                      />
+                      <span className="text-[11px] text-[#64748B] u360-table-numeric">
+                        {matter.caseNumber || 'Matter file'}
                       </span>
                     </div>
-
-                    <h4 className="font-serif font-bold text-xs text-[#1A1A1A] leading-tight">
-                      {n.title}
+                    <h4 className="font-semibold text-sm text-[#0B1426] line-clamp-1">
+                      {matter.title}
                     </h4>
-
-                    <p className="text-[11px] text-slate-600 line-clamp-2">
-                      {n.body}
-                    </p>
-
-                    <div className="pt-1.5 border-t border-slate-200 flex items-center justify-between text-[10px]">
-                      {n.linkTab ? (
-                        <button
-                          onClick={() => onNavigateTab(n.linkTab || 'dashboard')}
-                          className="font-bold text-[#B45309] hover:underline flex items-center gap-0.5 uppercase tracking-wider"
-                        >
-                          View In Case <ExternalLink className="w-3 h-3" />
-                        </button>
-                      ) : <span />}
-
-                      {!n.isRead && onMarkNotificationAsRead && (
-                        <button
-                          onClick={() => onMarkNotificationAsRead(n.id)}
-                          className="font-bold text-slate-500 hover:text-black uppercase tracking-wider text-[9px]"
-                        >
-                          Mark Read
-                        </button>
-                      )}
+                    <p className="text-xs text-[#475569]">{reason}</p>
+                    <div className="pt-1 flex items-center justify-end text-xs font-semibold text-[#0B1426]">
+                      <span>Inspect matter</span>
+                      <ChevronRight className="w-3.5 h-3.5" />
                     </div>
                   </div>
-                ))
-              )}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <button
-            onClick={() => onNavigateTab('dashboard')}
-            className="w-full py-2 bg-[#FDFCFB] hover:bg-white text-[#1A1A1A] text-[11px] font-bold uppercase tracking-wider text-center border-2 border-[#1A1A1A] transition-colors"
+            type="button"
+            onClick={() => onNavigateTab('matters')}
+            className="w-full py-2 bg-white hover:bg-[#F6F5F1] text-[#0B1426] text-xs font-semibold rounded-lg text-center border border-[#E2DFD7] transition-colors cursor-pointer"
           >
-            View Full Notification History
+            View all matters
           </button>
-        </div>
-
+        </section>
       </div>
-
     </div>
   );
 };
